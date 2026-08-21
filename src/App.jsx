@@ -3,13 +3,15 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import HomePage from './pages/HomePage';
 import OutpassPage from './pages/OutpassPage';
 import MaintenancePage from './pages/MaintenancePage';
+import { AuthProvider } from './context/AuthContext';
 import PointsPage from './pages/PointsPage';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
 
 export default function App() {
   return (
-    <Router>
+    <AuthProvider>
+      <Router>
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/outpass" element={<OutpassPage />} />
@@ -19,5 +21,6 @@ export default function App() {
         <Route path="/signup" element={<SignUpPage />} />
       </Routes>
     </Router>
+    </AuthProvider>
   );
 }

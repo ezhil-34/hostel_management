@@ -1,8 +1,28 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { Building2, ArrowLeft } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export default function SignInPage() {
+  const navigate = useNavigate();
+  const { login } = useAuth();
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    
+    // Extract registered name or fallback to full name from identifier
+    const registeredName = localStorage.getItem('registered_name') || 'Student';
+
+    login({
+      name: registeredName,
+      email: identifier,
+    });
+
+    navigate('/');
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
       <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 p-8 shadow-sm">
@@ -19,12 +39,15 @@ export default function SignInPage() {
           </div>
         </div>
 
-        <form className="space-y-4">
+        <form className="space-y-4" onSubmit={handleSubmit}>
           <div>
             <label className="block text-xs font-semibold text-slate-600 mb-1">Email or Roll Number</label>
             <input
               type="text"
+              required
               placeholder="student@hostel.edu"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
               className="w-full border border-slate-300 rounded-xl p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -32,11 +55,14 @@ export default function SignInPage() {
             <label className="block text-xs font-semibold text-slate-600 mb-1">Password</label>
             <input
               type="password"
+              required
               placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               className="w-full border border-slate-300 rounded-xl p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          <button className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm shadow-sm">
+          <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm shadow-sm">
             Sign In
           </button>
         </form>
