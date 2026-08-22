@@ -1,0 +1,12 @@
+{
+  "watch": ["src", "prisma/schema.prisma"],
+  "ext": "js,json,prisma",
+  "ignore": ["node_modules", "prisma/migrations"],
+
+  "//": "legacyWatch polls the filesystem instead of relying on inotify. Inside Docker, a bind mount from a Windows or macOS host does not deliver inotify events, so without this the server would never notice your edits. Costs a little CPU; harmless in development.",
+  "legacyWatch": true,
+  "pollingInterval": 400,
+
+  "//delay": "Debounce so a burst of saves triggers one restart, not five.",
+  "delay": 250
+}

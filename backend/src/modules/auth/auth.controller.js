@@ -1,0 +1,91 @@
+import env from '../../config/env.js';
+import * as authService from './auth.service.js';
+
+const refreshCookieOptions = {
+  httpOnly: true,
+  sameSite: env.isProd ? 'strict' : 'lax',
+  secure: env.isProd,
+  path: '/api/auth',
+  maxAge: authService.refreshTtlMs,
+};
+
+const sendSession = (res, status, { user, accessToken, refreshToken }) => {
+  res.cookie(env.cookieName, refreshToken, refreshCookieOptions);
+  res.status(status).json({
+    success: true,
+    data: {
+      user,
+      accessToken,
+      // Also returned in the body so non-browser clients (Postman, mobile)
+      // can use refresh without cookie support.
+      refreshToken,
+    },
+  });
+};
+
+const readRefreshToken = (req) => req.cookies?.[env.cookieName] ?? req.body?.refreshToken;
+
+export const signup = async (req, res, next) => {
+  try {
+    sendSession(res, 201, await authService.signup(req.body));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const signin = async (req, res, next) => {
+  try {
+    sendSession(res, 200, await authService.signin(req.body));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const refresh = async (req, res, next) => {
+  try {
+    sendSession(res, 200, await authService.refresh(readRefreshToken(req)));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const logout = async (req, res, next) => {
+  try {
+    await authService.logout(readRefreshToken(req));
+    res.clearCookie(env.cookieName, { ...refreshCookieOptions, maxAge: undefined });
+    res.status(200).json({ success: true, data: { message: 'Signed out' } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const me = async (req, res, next) => {
+  try {
+    res.json({ success: true, data: { user: await authService.getProfile(req.user.id) } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const changePassword = async (req, res, next) => {
+  try {
+    const { keptCurrentSession } = await authService.changePassword(
+      req.user.id,
+      req.body,
+      readRefreshToken(req),
+    );
+
+    // The cookie is deliberately NOT cleared: this device keeps its session,
+    // and every other device was revoked instead.
+    res.json({
+      success: true,
+      data: {
+        message: keptCurrentSession
+          ? 'Password updated. Other devices have been signed out.'
+          : 'Password updated. All sessions have been signed out — please sign in again.',
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
