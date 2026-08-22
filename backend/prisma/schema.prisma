@@ -1,0 +1,169 @@
+// SmartHostel — data model
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  STUDENT
+  WARDEN
+  ADMIN
+  STAFF
+}
+
+enum OutpassStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+enum MaintenanceCategory {
+  PLUMBING
+  ELECTRICAL
+  CARPENTRY
+  HOUSEKEEPING
+  INTERNET
+  OTHER
+}
+
+enum MaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum WalletType {
+  CANTEEN
+  LAUNDRY
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  email        String   @unique
+  rollNumber   String   @unique @map("roll_number")
+  phone        String?
+  passwordHash String   @map("password_hash")
+  role         Role     @default(STUDENT)
+  roomNo       String?  @map("room_no")
+  hostelBlock  String?  @map("hostel_block")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  outpasses           Outpass[]
+  maintenanceRequests MaintenanceRequest[]
+  wallets             Wallet[]
+  refreshTokens       RefreshToken[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Outpass {
+  id          String        @id @default(uuid()) @db.Uuid
+  reference   String        @unique
+  userId      String        @map("user_id") @db.Uuid
+  roomNo      String        @map("room_no")
+  destination String
+  reason      String
+  leaveAt     DateTime      @map("leave_at")
+  returnAt    DateTime      @map("return_at")
+  status      OutpassStatus @default(PENDING)
+  qrPayload   String?       @map("qr_payload")
+  approvedBy  String?       @map("approved_by")
+  approvedAt  DateTime?     @map("approved_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("outpasses")
+}
+
+model MaintenanceRequest {
+  id          String              @id @default(uuid()) @db.Uuid
+  reference   String              @unique
+  userId      String              @map("user_id") @db.Uuid
+  roomNo      String              @map("room_no")
+  category    MaintenanceCategory
+  description String
+  status      MaintenanceStatus   @default(OPEN)
+  imageUrl    String?             @map("image_url")
+  assignedTo  String?             @map("assigned_to")
+  resolvedAt  DateTime?           @map("resolved_at")
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("maintenance_requests")
+}
+
+model Wallet {
+  id        String     @id @default(uuid()) @db.Uuid
+  userId    String     @map("user_id") @db.Uuid
+  type      WalletType
+  balance   Int        @default(0)
+  pinHash   String?    @map("pin_hash")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions PointTransaction[]
+
+  @@unique([userId, type])
+  @@map("wallets")
+}
+
+model PointTransaction {
+  id        String          @id @default(uuid()) @db.Uuid
+  walletId  String          @map("wallet_id") @db.Uuid
+  title     String
+  points    Int
+  type      TransactionType
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId, createdAt])
+  @@map("point_transactions")
+}

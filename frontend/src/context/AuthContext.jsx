@@ -1,0 +1,109 @@
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { authApi, tokenStore } from '../lib/api';
+
+const AuthContext = createContext(null);
+
+const USER_KEY = 'hostel_user';
+
+const readCachedUser = () => {
+  try {
+    const saved = localStorage.getItem(USER_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+};
+
+const cacheUser = (user) => {
+  if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
+  else localStorage.removeItem(USER_KEY);
+};
+
+export const AuthProvider = ({ children }) => {
+  // Start from the cached user so a refresh does not flash the signed-out UI,
+  // then confirm against the server.
+  const [user, setUser] = useState(readCachedUser);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const applySession = useCallback(({ user: nextUser, accessToken }) => {
+    if (accessToken) tokenStore.set(accessToken);
+    setUser(nextUser);
+    cacheUser(nextUser);
+    return nextUser;
+  }, []);
+
+  const clearSession = useCallback(() => {
+    tokenStore.clear();
+    setUser(null);
+    cacheUser(null);
+  }, []);
+
+  // Revalidate on mount: the cached user may be stale or the session expired.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (!tokenStore.get() && !readCachedUser()) {
+        setIsLoading(false);
+        return;
+      }
+      try {
+        const { user: fresh } = await authApi.me();
+        if (!cancelled) applySession({ user: fresh });
+      } catch {
+        if (!cancelled) clearSession();
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applySession, clearSession]);
+
+  const login = useCallback(
+    async (identifier, password) => applySession(await authApi.signin({ identifier, password })),
+    [applySession],
+  );
+
+  const signup = useCallback(
+    async (payload) => applySession(await authApi.signup(payload)),
+    [applySession],
+  );
+
+  const logout = useCallback(async () => {
+    try {
+      await authApi.logout();
+    } finally {
+      clearSession();
+    }
+  }, [clearSession]);
+
+  const updateProfile = useCallback(
+    async (payload) => applySession({ user: (await authApi.updateProfile(payload)).user }),
+    [applySession],
+  );
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        isLoading,
+        isAuthenticated: Boolean(user),
+        login,
+        signup,
+        logout,
+        updateProfile,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used inside an <AuthProvider>');
+  return ctx;
+};
