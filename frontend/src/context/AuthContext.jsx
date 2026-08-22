@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { authApi, tokenStore } from '../lib/api';
+import { authApi, tokenStore, ApiRequestError } from '../lib/api';
 
 const AuthContext = createContext(null);
 
@@ -50,8 +50,14 @@ export const AuthProvider = ({ children }) => {
       try {
         const { user: fresh } = await authApi.me();
         if (!cancelled) applySession({ user: fresh });
-      } catch {
-        if (!cancelled) clearSession();
+      } catch (err) {
+        if (cancelled) return;
+        // Only a genuine 401 means the session is gone. A network failure or a
+        // 5xx means the *server* is having a moment — throwing the user out and
+        // wiping their cached session over a backend restart is not acceptable.
+        if (err instanceof ApiRequestError && err.status === 401) {
+          clearSession();
+        }
       } finally {
         if (!cancelled) setIsLoading(false);
       }

@@ -2,6 +2,7 @@
  * Seeds a demo warden and student so you can sign in immediately.
  * Run with: npm run db:seed  (or: docker compose exec backend npm run db:seed)
  */
+import crypto from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import 'dotenv/config';
@@ -34,7 +35,7 @@ const ref = (prefix) => `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
 async function main() {
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
 
-  await prisma.user.upsert({
+  const warden = await prisma.user.upsert({
     where: { email: 'warden@hostel.edu' },
     update: {},
     create: {
@@ -57,6 +58,19 @@ async function main() {
       phone: '+91 90000 00001',
       passwordHash,
       role: 'ADMIN',
+    },
+  });
+
+  const security = await prisma.user.upsert({
+    where: { email: 'security@hostel.edu' },
+    update: {},
+    create: {
+      name: 'Gate Security',
+      email: 'security@hostel.edu',
+      rollNumber: 'SEC-01',
+      phone: '+91 90000 00002',
+      passwordHash,
+      role: 'SECURITY',
     },
   });
 
@@ -99,17 +113,31 @@ async function main() {
       });
     }
 
-    if ((await prisma.outpass.count({ where: { userId: user.id } })) === 0) {
+    // John is left with no outpass on purpose, so he can walk the full flow
+    // straight away: request → warden approves → gate scans him out and in.
+    // (A student may hold only one open pass, so a seeded one would block him.)
+    //
+    // Priya starts already out and an hour past her return time, which gives
+    // the warden's "Overdue" filter something to show on a fresh install.
+    if (
+      user.email === 'priya@student.edu' &&
+      (await prisma.outpass.count({ where: { userId: user.id } })) === 0
+    ) {
       await prisma.outpass.create({
         data: {
           reference: ref('OUT'),
           userId: user.id,
           roomNo: user.roomNo ?? 'N/A',
-          destination: 'Home / Local Market',
-          reason: 'Personal work',
-          leaveAt: new Date(Date.now() + 3_600_000),
-          returnAt: new Date(Date.now() + 36_000_000),
-          status: 'APPROVED',
+          destination: 'City Center',
+          reason: 'Picking up study materials from the city bookstore.',
+          leaveAt: new Date(Date.now() - 10_800_000),
+          returnAt: new Date(Date.now() - 3_600_000), // an hour overdue
+          status: 'ACTIVE',
+          reviewerId: warden.id,
+          reviewedAt: new Date(Date.now() - 14_400_000),
+          exitedAt: new Date(Date.now() - 10_500_000),
+          exitLoggedBy: security.id,
+          verifyToken: crypto.randomBytes(32).toString('base64url'),
         },
       });
     }
@@ -145,10 +173,11 @@ async function main() {
   }
 
   console.log('Seed complete.');
-  console.log(`  admin@hostel.edu  / ${DEMO_PASSWORD}   (admin)`);
-  console.log(`  warden@hostel.edu / ${DEMO_PASSWORD}   (warden — has 1 request to review)`);
-  console.log(`  john@student.edu  / ${DEMO_PASSWORD}   (roll 21CS104)`);
-  console.log(`  priya@student.edu / ${DEMO_PASSWORD}   (roll 21EC211)`);
+  console.log(`  admin@hostel.edu    / ${DEMO_PASSWORD}   (admin)`);
+  console.log(`  warden@hostel.edu   / ${DEMO_PASSWORD}   (warden — 1 profile request, 1 overdue pass)`);
+  console.log(`  security@hostel.edu / ${DEMO_PASSWORD}   (gate guard — scans outpass QR codes)`);
+  console.log(`  john@student.edu    / ${DEMO_PASSWORD}   (roll 21CS104 — no pass yet, request one)`);
+  console.log(`  priya@student.edu   / ${DEMO_PASSWORD}   (roll 21EC211 — currently out, overdue)`);
 }
 
 main()

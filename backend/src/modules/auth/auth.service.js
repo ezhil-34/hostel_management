@@ -164,7 +164,19 @@ export const logout = async (token) => {
 export const getProfile = (userId) =>
   prisma.user.findUnique({ where: { id: userId }, select: publicUserSelect });
 
-export const changePassword = async (userId, { currentPassword, newPassword }) => {
+/**
+ * Changes the password and signs out every *other* session.
+ *
+ * `currentRefreshToken` is the token belonging to the device making the change;
+ * it is spared, so the person doing this stays signed in — which is what the UI
+ * promises them. Revoking it too would silently drop them out as soon as their
+ * 15-minute access token expired.
+ */
+export const changePassword = async (
+  userId,
+  { currentPassword, newPassword },
+  currentRefreshToken,
+) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw ApiError.notFound('User not found');
 
@@ -172,15 +184,22 @@ export const changePassword = async (userId, { currentPassword, newPassword }) =
     throw ApiError.badRequest('Current password is incorrect');
   }
 
+  const keepHash = currentRefreshToken ? hashToken(currentRefreshToken) : null;
+
   await prisma.$transaction([
     prisma.user.update({
       where: { id: userId },
       data: { passwordHash: await hashPassword(newPassword) },
     }),
-    // Changing the password signs out every other session.
     prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
+      where: {
+        userId,
+        revokedAt: null,
+        ...(keepHash ? { NOT: { tokenHash: keepHash } } : {}),
+      },
       data: { revokedAt: new Date() },
     }),
   ]);
+
+  return { keptCurrentSession: Boolean(keepHash) };
 };

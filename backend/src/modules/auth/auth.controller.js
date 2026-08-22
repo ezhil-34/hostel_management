@@ -69,11 +69,21 @@ export const me = async (req, res, next) => {
 
 export const changePassword = async (req, res, next) => {
   try {
-    await authService.changePassword(req.user.id, req.body);
-    res.clearCookie(env.cookieName, { ...refreshCookieOptions, maxAge: undefined });
+    const { keptCurrentSession } = await authService.changePassword(
+      req.user.id,
+      req.body,
+      readRefreshToken(req),
+    );
+
+    // The cookie is deliberately NOT cleared: this device keeps its session,
+    // and every other device was revoked instead.
     res.json({
       success: true,
-      data: { message: 'Password updated — please sign in again' },
+      data: {
+        message: keptCurrentSession
+          ? 'Password updated. Other devices have been signed out.'
+          : 'Password updated. All sessions have been signed out — please sign in again.',
+      },
     });
   } catch (err) {
     next(err);

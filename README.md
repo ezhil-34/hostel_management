@@ -39,9 +39,10 @@ docker compose exec backend npm run db:seed
 
 Demo logins after seeding (password `Password123`):
 
-- `john@student.edu` — roll `21CS104`, student
-- `priya@student.edu` — roll `21EC211`, student
-- `warden@hostel.edu` — warden; starts with one request waiting in **Approvals**
+- `john@student.edu` — roll `21CS104`; no outpass yet, so he can walk the whole flow
+- `priya@student.edu` — roll `21EC211`; currently out and an hour overdue
+- `warden@hostel.edu` — warden; one profile request and one overdue pass waiting
+- `security@hostel.edu` — gate guard; scans outpass QR codes
 - `admin@hostel.edu` — administrator
 
 Everyday commands:
@@ -64,7 +65,7 @@ containers, so there is nothing to copy or rebuild for ordinary code edits.
 | ----------------------------------- | -------------------------------------- | -------------------------------------------------- |
 | `frontend/src/**` (jsx, css)        | Vite hot-swaps the module              | Nothing — the browser updates in place              |
 | `backend/src/**` (js)               | nodemon restarts the API in ~1s        | Nothing — re-trigger the request                    |
-| `backend/prisma/schema.prisma`      | Nothing until you migrate              | `docker compose exec backend npx prisma migrate dev --name your_change` |
+| `backend/prisma/schema.prisma`      | Nothing until you migrate              | `docker compose exec backend npx prisma migrate dev --name your_change` then `docker compose restart backend` |
 | `package.json` (added a dependency) | Not installed in the container yet     | See **Adding a dependency** below — a rebuild alone is not enough |
 | `.env` or `docker-compose.yml`      | Not picked up by a running container   | `docker compose up -d` (recreates what changed)     |
 | `Dockerfile` or `nginx.conf`        | Image is stale                         | `docker compose up -d --build <service>`            |
@@ -194,7 +195,8 @@ hostel_management/
 │       ├── routes/index.js       # /api router + health checks
 │       └── modules/
 │           ├── auth/             # routes → controller → service → schema
-│           └── profile/          # + profile.policy.js (field permissions)
+│           ├── profile/          # + profile.policy.js (field permissions)
+│           └── outpass/          # request → approve → gate scan → return
 │
 └── frontend/
     ├── Dockerfile                # multi-stage: development | build | nginx
@@ -206,8 +208,9 @@ hostel_management/
         │   ├── AuthContext.jsx
         │   ├── ToastContext.jsx     # useToast() — success/error/info/warning
         │   └── ConfirmContext.jsx   # useConfirm() — promise-based dialog
-        ├── components/           # ProtectedRoute, StatusBadge, ChangeRequestCard, …
-        └── pages/                # Home, SignIn, SignUp, Profile, Outpass, Maintenance, Points
+        ├── components/           # ProtectedRoute, StatusBadge, OutpassCard, …
+        └── pages/                # Home, SignIn, SignUp, Profile, Outpass,
+                                  # GateVerify, Maintenance, Points
 ```
 
 ### Toasts and confirmations
@@ -250,7 +253,7 @@ Base URL `/api`. Every response is `{ success, data }` or `{ success, error }`.
 | POST   | `/auth/refresh`         | cookie | Rotate the refresh token, issue a new access token |
 | POST   | `/auth/logout`          | cookie | Revoke the refresh token                       |
 | GET    | `/auth/me`              | Bearer | Current profile                                |
-| POST   | `/auth/change-password` | Bearer | Change password; signs out other sessions      |
+| POST   | `/auth/change-password` | Bearer | Change password; signs out **other** devices, keeps this one |
 
 ### Profile and change requests
 
@@ -267,6 +270,20 @@ Base URL `/api`. Every response is `{ success, data }` or `{ success, error }`.
 There is deliberately **no** `PATCH /auth/me`. Profile writes go through
 `PATCH /api/profile` so the field policy has exactly one enforcement point —
 do not add a second route that writes these columns.
+
+### Outpasses
+
+| Method | Endpoint | Who | Purpose |
+| --- | --- | --- | --- |
+| GET | `/outpasses` | any | Own passes (`?status=`, `?overdue=true`) |
+| POST | `/outpasses` | any | Request a pass → `PENDING` |
+| GET | `/outpasses/:id` | owner | One pass, with `qrUrl` once approved |
+| PATCH | `/outpasses/:id/cancel` | owner | Withdraw (refused once `ACTIVE`) |
+| GET | `/outpasses/review` | Warden/Admin | Queue (`?status=`, `?overdue=true`) |
+| PATCH | `/outpasses/review/:id` | Warden/Admin | `{ decision: "APPROVED" \| "REJECTED", note }` |
+| GET | `/outpasses/verify/:token` | Security/Warden/Admin | Pass + student + next gate action |
+| POST | `/outpasses/verify/:token/exit` | Security/Warden/Admin | Check the student out → `ACTIVE` |
+| POST | `/outpasses/verify/:token/return` | Security/Warden/Admin | Check them in → `COMPLETED` |
 
 Validation failures return `400` with per-field messages:
 
@@ -338,6 +355,74 @@ copies `newValue` onto the user row inside a transaction. Guards worth knowing:
   when the request was raised.
 - Reviewers cannot approve their own requests.
 
+---
+
+## Outpasses
+
+```
+PENDING ──approve──▶ APPROVED ──gate exit──▶ ACTIVE ──gate return──▶ COMPLETED
+   │                     │                      │
+   ├──reject──▶ REJECTED │                      └─ past returnAt ⇒ shown OVERDUE
+   └──────── cancel ─────┴──▶ CANCELLED             (derived, never stored)
+```
+
+A student requests a pass; a **warden or admin** approves or rejects it; approval
+mints a QR code; a **gate guard** scans it to check the student out and back in.
+
+**Overdue is computed, not stored.** There is no `OVERDUE` enum value — a stored
+flag would need a scheduled job to keep it true and would be wrong between runs.
+`serializeOutpass()` in `outpass.service.js` derives `isOverdue` and
+`overdueByMinutes` on every read, so the answer is right the moment it is asked.
+
+**Expired is derived too.** A `PENDING` or `APPROVED` pass whose return time
+came and went was never used. It reads as `isExpired`, shows as *Expired unused*,
+stops counting against the one-pass rule, and will not open the gate. Without
+this, one approved-but-unused pass would lock a student out of requesting
+another for good.
+
+**Rules the API enforces**
+
+- Return time must be after the leave time; the leave time cannot be in the past
+  (5 minutes of slack for clock skew between browser and server).
+- One open pass at a time — but only a *live* one. An `ACTIVE` pass always
+  blocks (the student is physically out); an expired `PENDING`/`APPROVED` one
+  does not.
+- A pass in use cannot be cancelled; the gate must check the student back in.
+- Exit only from `APPROVED`, and only inside the approved window — 30 minutes of
+  grace at the front, nothing after the return time. A pass for next Friday will
+  not open the gate today.
+- Return only from `ACTIVE`. Re-scanning says "already checked out at 18:42"
+  rather than writing twice.
+- A reviewer cannot approve their own pass.
+- `?overdue=true` with a conflicting `?status=` is rejected rather than silently
+  reinterpreted.
+
+`GET /outpasses/verify/:token` returns `nextAction` plus a `blockedReason`, and
+the two mirror `markExit`'s checks exactly — so the guard is only ever shown a
+button that will actually work.
+
+### The QR code
+
+`APP_PUBLIC_URL` + `/verify/<token>`, where the token is 32 random bytes minted
+at approval. The guard's phone camera opens that URL — no scanner library needed.
+
+The token is a **bearer capability**, so it is defended accordingly: every
+`/verify` route requires a Security, Warden or Admin session, `/verify/:token` in
+the browser sits behind `ProtectedRoute`, and the token is wiped when the pass is
+cancelled or completed. Photographing someone's pass gets you a sign-in screen.
+A student cannot use the verify routes at all — not even on their own pass.
+
+The QR URL is returned **only to the pass's owner**. The warden's review queue
+covers every student in the hostel, so it deliberately omits `qrUrl` — a
+reviewer needs to decide, not to walk people through the gate.
+
+> **Scanning with a real phone** — set `APP_PUBLIC_URL` in `.env` to your
+> machine's LAN address (e.g. `http://192.168.1.20:5173`) and run
+> `docker compose up -d`. A QR containing `localhost` points the phone at itself.
+> Clicking the link on your computer works without this.
+
+---
+
 ## Data model
 
 `User` — students, wardens, admins and staff. Unique on both `email` and
@@ -345,8 +430,9 @@ copies `newValue` onto the user row inside a transaction. Guards worth knowing:
 
 `RefreshToken` — hashed sessions with expiry and revocation.
 
-`Outpass` — destination, leave/return times, reason, status
-(`PENDING → APPROVED → COMPLETED`), and a QR payload for gate verification.
+`Outpass` — destination, leave/return times, reason, status, the reviewer and
+their note, the `verifyToken` behind the QR, and the gate log (`exitedAt`,
+`returnedAt`, and which guard recorded each). See [Outpasses](#outpasses) above.
 
 `MaintenanceRequest` — category, description, status (`OPEN → IN_PROGRESS →
 RESOLVED → CLOSED`), optional photo and assignee.
@@ -368,15 +454,16 @@ docker compose exec backend npx prisma migrate dev --name describe_your_change
 
 ## Adding a feature
 
-The auth and profile modules are the template. For outpasses:
+The auth, profile and outpass modules are the template. For maintenance:
 
-1. `src/modules/outpass/outpass.schema.js` — zod shapes for the request body.
-2. `src/modules/outpass/outpass.service.js` — Prisma queries, no HTTP concerns.
-3. `src/modules/outpass/outpass.controller.js` — read the request, call the
-   service, shape the response.
-4. `src/modules/outpass/outpass.routes.js` — wire it with `requireAuth` and
-   `validate(...)`.
-5. Register it in `src/routes/index.js` (the placeholders are already there).
+1. `src/modules/maintenance/maintenance.schema.js` — zod shapes for the body.
+2. `src/modules/maintenance/maintenance.service.js` — Prisma queries and all
+   business rules, no HTTP concerns.
+3. `src/modules/maintenance/maintenance.controller.js` — read the request, call
+   the service, shape the response.
+4. `src/modules/maintenance/maintenance.routes.js` — wire it with `requireAuth`,
+   `requireRole(...)` and `validate(...)`.
+5. Register it in `src/routes/index.js` (the placeholder is already there).
 
 On the frontend, add the calls to `src/lib/api.js` and replace the `useState`
 seed arrays in the page with data fetched from the API.
@@ -388,6 +475,22 @@ seed arrays in the page with data fetched from the API.
 **`Database unavailable — is PostgreSQL running and migrated?`**
 The API started before the tables existed. Run
 `docker compose exec backend npx prisma migrate dev --name init`.
+
+**`The database client is out of date with the schema`**
+You edited `schema.prisma` but never migrated, so the generated client still
+knows the old columns — the giveaway in the log is Prisma suggesting field names
+you removed. Fix it with:
+
+```bash
+docker compose exec backend npx prisma migrate dev --name your_change
+docker compose restart backend
+```
+
+The restart matters: Node loaded the old client into memory at boot, and
+regenerating files on disk does not change what is already running. (`npm run
+dev` also runs `prisma generate` at container start, so a plain
+`docker compose restart backend` fixes a client that is merely stale — but only
+a migration adds the columns to the database itself.)
 
 **`Error: P1001: Can't reach database server`**
 Postgres is still starting. `docker compose ps` should show it as `healthy`;

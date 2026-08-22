@@ -5,6 +5,7 @@ import OutpassPage from './pages/OutpassPage';
 import MaintenancePage from './pages/MaintenancePage';
 import PointsPage from './pages/PointsPage';
 import ProfilePage from './pages/ProfilePage';
+import GateVerifyPage from './pages/GateVerifyPage';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
 
@@ -18,6 +19,9 @@ const protectedRoutes = [
   { path: '/maintenance', element: <MaintenancePage /> },
   { path: '/points', element: <PointsPage /> },
   { path: '/profile', element: <ProfilePage /> },
+  // Where an outpass QR code lands. Protected, so an unauthenticated scan is
+  // sent to sign-in and returned here afterwards.
+  { path: '/verify/:token', element: <GateVerifyPage /> },
 ];
 
 export default function App() {

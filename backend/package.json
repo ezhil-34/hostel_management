@@ -9,8 +9,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "dev:native": "node --watch src/server.js",
+    "//dev": "prisma generate first so the client always matches schema.prisma — otherwise editing the schema without regenerating fails at runtime with a confusing 'Unknown field' error.",
+    "dev": "prisma generate && nodemon src/server.js",
+    "dev:native": "prisma generate && node --watch src/server.js",
     "start": "node src/server.js",
     "lint": "echo \"no linter configured\" && exit 0",
     "prisma:generate": "prisma generate",

@@ -39,6 +39,13 @@ export const env = {
 
   corsOrigins: asList(process.env.CORS_ORIGINS, 'http://localhost:5173,http://localhost:3000'),
 
+  /**
+   * Origin baked into outpass QR codes. Must be an address the *guard's phone*
+   * can reach — set it to the host machine's LAN IP to scan with a real device,
+   * since `localhost` inside a QR resolves to the phone itself.
+   */
+  appPublicUrl: (process.env.APP_PUBLIC_URL ?? 'http://localhost:5173').replace(/\/+$/, ''),
+
   cookieName: process.env.REFRESH_COOKIE_NAME ?? 'hostel_refresh',
 };
 

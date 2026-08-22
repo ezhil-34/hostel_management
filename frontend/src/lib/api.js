@@ -125,4 +125,23 @@ export const profileApi = {
   review: (id, payload) => api.patch(`/profile/review/requests/${id}`, payload),
 };
 
+const outpassQuery = ({ status = 'ALL', overdue = false } = {}) =>
+  `?status=${status}${overdue ? '&overdue=true' : ''}`;
+
+export const outpassApi = {
+  list: (opts) => api.get(`/outpasses${outpassQuery(opts)}`),
+  create: (payload) => api.post('/outpasses', payload),
+  get: (id) => api.get(`/outpasses/${id}`),
+  cancel: (id) => api.patch(`/outpasses/${id}/cancel`),
+
+  // Warden / admin.
+  listForReview: (opts) => api.get(`/outpasses/review${outpassQuery(opts)}`),
+  review: (id, payload) => api.patch(`/outpasses/review/${id}`, payload),
+
+  // Gate — security, warden or admin only.
+  verify: (token) => api.get(`/outpasses/verify/${token}`),
+  markExit: (token) => api.post(`/outpasses/verify/${token}/exit`),
+  markReturn: (token) => api.post(`/outpasses/verify/${token}/return`),
+};
+
 export default api;

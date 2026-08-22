@@ -19,12 +19,17 @@ enum Role {
   WARDEN
   ADMIN
   STAFF
+  SECURITY
 }
 
+/// PENDING → APPROVED → ACTIVE → COMPLETED is the happy path.
+/// There is deliberately no OVERDUE member: a stored flag would need a
+/// scheduler to stay true, so it is derived on read from returnAt instead.
 enum OutpassStatus {
   PENDING
   APPROVED
   REJECTED
+  ACTIVE
   COMPLETED
   CANCELLED
 }
@@ -81,6 +86,7 @@ model User {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   outpasses           Outpass[]
+  reviewedOutpasses   Outpass[]              @relation("OutpassReviewer")
   maintenanceRequests MaintenanceRequest[]
   wallets             Wallet[]
   refreshTokens       RefreshToken[]
@@ -141,15 +147,31 @@ model Outpass {
   leaveAt     DateTime      @map("leave_at")
   returnAt    DateTime      @map("return_at")
   status      OutpassStatus @default(PENDING)
-  qrPayload   String?       @map("qr_payload")
-  approvedBy  String?       @map("approved_by")
-  approvedAt  DateTime?     @map("approved_at")
-  createdAt   DateTime      @default(now()) @map("created_at")
-  updatedAt   DateTime      @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Review
+  reviewerId String?   @map("reviewer_id") @db.Uuid
+  reviewNote String?   @map("review_note")
+  reviewedAt DateTime? @map("reviewed_at")
+
+  /// Random secret embedded in the pass QR code, minted on approval. The gate
+  /// verify routes look a pass up by this instead of by id, so the QR never
+  /// exposes a guessable identifier.
+  verifyToken String? @unique @map("verify_token")
+
+  // Gate log
+  exitedAt       DateTime? @map("exited_at")
+  exitLoggedBy   String?   @map("exit_logged_by") @db.Uuid
+  returnedAt     DateTime? @map("returned_at")
+  returnLoggedBy String?   @map("return_logged_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("OutpassReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
+  @@index([status, returnAt])
   @@map("outpasses")
 }
 
