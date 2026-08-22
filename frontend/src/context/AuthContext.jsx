@@ -80,10 +80,8 @@ export const AuthProvider = ({ children }) => {
     }
   }, [clearSession]);
 
-  const updateProfile = useCallback(
-    async (payload) => applySession({ user: (await authApi.updateProfile(payload)).user }),
-    [applySession],
-  );
+  /** Called after a profile save so the header and cache show the new details. */
+  const setUserData = useCallback((nextUser) => applySession({ user: nextUser }), [applySession]);
 
   return (
     <AuthContext.Provider
@@ -94,7 +92,7 @@ export const AuthProvider = ({ children }) => {
         login,
         signup,
         logout,
-        updateProfile,
+        setUserData,
       }}
     >
       {children}

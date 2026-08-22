@@ -67,15 +67,6 @@ export const me = async (req, res, next) => {
   }
 };
 
-export const updateMe = async (req, res, next) => {
-  try {
-    const user = await authService.updateProfile(req.user.id, req.body);
-    res.json({ success: true, data: { user } });
-  } catch (err) {
-    next(err);
-  }
-};
-
 export const changePassword = async (req, res, next) => {
   try {
     await authService.changePassword(req.user.id, req.body);

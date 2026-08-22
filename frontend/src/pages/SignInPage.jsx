@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Building2, ArrowLeft, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { ApiRequestError } from '../lib/api';
 
 export default function SignInPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
+  const toast = useToast();
 
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -22,14 +24,18 @@ export default function SignInPage() {
     setSubmitting(true);
 
     try {
-      await login(identifier, password);
+      const signedIn = await login(identifier, password);
+      toast.success(`Welcome back, ${signedIn.name.split(' ')[0]}`, 'You are signed in.');
       navigate(location.state?.from ?? '/', { replace: true });
     } catch (err) {
       if (err instanceof ApiRequestError) {
         setError(err.message);
         setFieldErrors(err.fieldErrors);
+        toast.error('Sign in failed', err.message);
       } else {
-        setError('Could not reach the server. Is the backend running?');
+        const message = 'Could not reach the server. Is the backend running?';
+        setError(message);
+        toast.error('Sign in failed', message);
       }
     } finally {
       setSubmitting(false);

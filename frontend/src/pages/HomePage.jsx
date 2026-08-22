@@ -2,12 +2,30 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { QrCode, Wrench, Wallet, ArrowRight, LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
+import { useConfirm } from '../context/ConfirmContext';
 
 export default function HomePage() {
   const { user, logout } = useAuth();
+  const toast = useToast();
+  const confirm = useConfirm();
 
   // Get first letter of user name
   const userInitial = user?.name ? user.name.charAt(0).toUpperCase() : 'U';
+
+  const handleLogout = async () => {
+    const confirmed = await confirm({
+      title: 'Sign out?',
+      message: 'You will need your password to sign back in.',
+      confirmLabel: 'Sign out',
+      cancelLabel: 'Stay signed in',
+      tone: 'logout',
+    });
+    if (!confirmed) return;
+
+    await logout();
+    toast.info('Signed out', 'See you next time.');
+  };
 
   return (
     <div className="min-h-screen bg-slate-50/50 font-sans text-slate-900">
@@ -25,17 +43,23 @@ export default function HomePage() {
           <div className="flex items-center gap-4">
             {user ? (
               <div className="flex items-center gap-3">
-                {/* Name Avatar Circle */}
-                <div className="w-9 h-9 bg-blue-600 text-white font-bold rounded-full flex items-center justify-center text-sm shadow-sm uppercase">
-                  {userInitial}
-                </div>
-                <span className="text-sm font-semibold text-slate-800 hidden sm:inline">
-                  {user.name}
-                </span>
+                {/* Avatar + name open the profile page */}
+                <Link
+                  to="/profile"
+                  title="View your profile"
+                  className="flex items-center gap-3 rounded-xl px-1.5 py-1 transition-colors hover:bg-slate-100"
+                >
+                  <div className="w-9 h-9 bg-blue-600 text-white font-bold rounded-full flex items-center justify-center text-sm shadow-sm uppercase">
+                    {userInitial}
+                  </div>
+                  <span className="text-sm font-semibold text-slate-800 hidden sm:inline">
+                    {user.name}
+                  </span>
+                </Link>
 
                 {/* Log Out Button */}
                 <button
-                  onClick={logout}
+                  onClick={handleLogout}
                   className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 hover:text-red-600 bg-slate-100 hover:bg-red-50 px-3.5 py-2 rounded-xl transition-colors"
                 >
                   <LogOut className="w-4 h-4" />

@@ -55,13 +55,6 @@ export const signinSchema = z.object({
   password: z.string().min(1, 'Password is required'),
 });
 
-export const updateProfileSchema = z.object({
-  name: optional(nameField),
-  phone: optional(phoneField),
-  roomNo: optional(shortText(20, 'Room number')),
-  hostelBlock: optional(shortText(20, 'Hostel block')),
-});
-
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, 'Current password is required'),
   newPassword: passwordField,

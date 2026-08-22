@@ -39,9 +39,10 @@ docker compose exec backend npm run db:seed
 
 Demo logins after seeding (password `Password123`):
 
-- `john@student.edu` — roll `21CS104`
-- `priya@student.edu` — roll `21EC211`
-- `warden@hostel.edu` — warden role
+- `john@student.edu` — roll `21CS104`, student
+- `priya@student.edu` — roll `21EC211`, student
+- `warden@hostel.edu` — warden; starts with one request waiting in **Approvals**
+- `admin@hostel.edu` — administrator
 
 Everyday commands:
 
@@ -51,6 +52,81 @@ docker compose restart backend     # restart after an env change
 docker compose down                # stop everything (data survives)
 docker compose down -v             # stop and wipe the database volume
 ```
+
+---
+
+## Seeing your changes
+
+Both services reload on save — your project folder is bind-mounted into the
+containers, so there is nothing to copy or rebuild for ordinary code edits.
+
+| You changed…                        | What happens                           | What you do                                        |
+| ----------------------------------- | -------------------------------------- | -------------------------------------------------- |
+| `frontend/src/**` (jsx, css)        | Vite hot-swaps the module              | Nothing — the browser updates in place              |
+| `backend/src/**` (js)               | nodemon restarts the API in ~1s        | Nothing — re-trigger the request                    |
+| `backend/prisma/schema.prisma`      | Nothing until you migrate              | `docker compose exec backend npx prisma migrate dev --name your_change` |
+| `package.json` (added a dependency) | Not installed in the container yet     | See **Adding a dependency** below — a rebuild alone is not enough |
+| `.env` or `docker-compose.yml`      | Not picked up by a running container   | `docker compose up -d` (recreates what changed)     |
+| `Dockerfile` or `nginx.conf`        | Image is stale                         | `docker compose up -d --build <service>`            |
+
+### Adding a dependency
+
+`node_modules` lives in a **named volume**, not in the image and not in your
+project folder — that is what stops a Windows-built `node_modules` from being
+mounted into a Linux container. The catch: Docker copies the image's
+`node_modules` into that volume only when it creates the volume. Once the volume
+exists it is never refreshed, so `docker compose up --build` rebuilds the image
+and then mounts the *old* dependencies straight over the top of it. You get
+`sh: <package>: not found` for anything newly added.
+
+Two ways to fix it. Quickest, installs into the running volume:
+
+```bash
+docker compose exec backend npm install
+docker compose restart backend
+```
+
+Cleanest, rebuilds the volume from the image so it matches `package-lock.json`
+exactly:
+
+```bash
+docker compose down
+docker volume rm hostel-management_backend_node_modules   # frontend_node_modules for the frontend
+docker compose up -d --build
+```
+
+**Use `docker compose down`, never `docker compose down -v`** — the `-v` flag
+deletes *every* volume in the project, `postgres_data` included, which wipes your
+database. Dropping the `node_modules` volume by name is safe: it is a cache and
+is rebuilt from the image.
+
+If the volume name is rejected, list them with `docker volume ls` and pick the
+one ending in `backend_node_modules` (the prefix comes from `name:` at the top of
+`docker-compose.yml`).
+
+Watch it happen — keep this open in a second terminal while you edit:
+
+```bash
+docker compose logs -f backend
+```
+
+You should see `[nodemon] restarting due to changes...` a second after you save.
+
+**Why polling?** Docker bind mounts from a Windows or macOS host do not deliver
+filesystem events into the container, so a watcher that waits for them never
+fires. Both services poll instead: `CHOKIDAR_USEPOLLING=true` for Vite (set in
+`docker-compose.yml`) and `legacyWatch` for nodemon (set in
+`backend/nodemon.json`). It costs a little idle CPU, which is the right trade in
+development. Running on Linux, or outside Docker, you can use
+`npm run dev:native` in `backend/` for the lighter native watcher.
+
+**If a change is not showing up**
+
+1. `docker compose ps` — is the service actually running, or restart-looping?
+2. `docker compose logs --tail=50 backend` — a syntax error stops the reload;
+   nodemon prints the crash and waits for your next save.
+3. Hard-refresh the browser (Ctrl+Shift+R) to rule out a cached bundle.
+4. `docker compose restart backend` as a blunt reset.
 
 ---
 
@@ -116,7 +192,9 @@ hostel_management/
 │       ├── middleware/           # auth guard, zod validation, error handler
 │       ├── utils/                # jwt, password hashing, ApiError
 │       ├── routes/index.js       # /api router + health checks
-│       └── modules/auth/         # routes → controller → service → schema
+│       └── modules/
+│           ├── auth/             # routes → controller → service → schema
+│           └── profile/          # + profile.policy.js (field permissions)
 │
 └── frontend/
     ├── Dockerfile                # multi-stage: development | build | nginx
@@ -124,10 +202,38 @@ hostel_management/
     ├── vite.config.js            # dev proxy, docker-friendly host binding
     └── src/
         ├── lib/api.js            # fetch wrapper with auto token refresh
-        ├── context/AuthContext.jsx
-        ├── components/ProtectedRoute.jsx
-        └── pages/                # Home, SignIn, SignUp, Outpass, Maintenance, Points
+        ├── context/
+        │   ├── AuthContext.jsx
+        │   ├── ToastContext.jsx     # useToast() — success/error/info/warning
+        │   └── ConfirmContext.jsx   # useConfirm() — promise-based dialog
+        ├── components/           # ProtectedRoute, StatusBadge, ChangeRequestCard, …
+        └── pages/                # Home, SignIn, SignUp, Profile, Outpass, Maintenance, Points
 ```
+
+### Toasts and confirmations
+
+Two providers wrap the app in `App.jsx`, above `AuthProvider` so auth flows can
+use them too.
+
+```jsx
+const toast = useToast();
+toast.success('Profile updated', 'Phone number saved.');
+toast.error('Could not save', err.message);   // errors stay until dismissed
+
+const confirm = useConfirm();
+if (!(await confirm({
+  title: 'Sign out?',
+  message: 'You will need your password to sign back in.',
+  confirmLabel: 'Sign out',
+  tone: 'logout',              // primary | warning | danger | delete | logout
+  details: { Field: 'Room Number', Change: 'B-302 → C-101' },
+}))) return;
+```
+
+`confirm()` resolves `true`/`false` — escape, the backdrop and Cancel all
+resolve `false`. Confirmations guard consequential actions (sign out, cancel a
+request, approve/reject, change password); everything else reports through a
+toast.
 
 ---
 
@@ -144,8 +250,23 @@ Base URL `/api`. Every response is `{ success, data }` or `{ success, error }`.
 | POST   | `/auth/refresh`         | cookie | Rotate the refresh token, issue a new access token |
 | POST   | `/auth/logout`          | cookie | Revoke the refresh token                       |
 | GET    | `/auth/me`              | Bearer | Current profile                                |
-| PATCH  | `/auth/me`              | Bearer | Update name / phone / room / block             |
 | POST   | `/auth/change-password` | Bearer | Change password; signs out other sessions      |
+
+### Profile and change requests
+
+| Method | Endpoint                             | Auth           | Purpose                                     |
+| ------ | ------------------------------------ | -------------- | ------------------------------------------- |
+| GET    | `/profile`                           | Bearer         | Profile + the field policy for your role    |
+| PATCH  | `/profile`                           | Bearer         | Edit self-editable fields only              |
+| GET    | `/profile/requests`                  | Bearer         | Your change requests (`?status=` to filter) |
+| POST   | `/profile/requests`                  | Bearer         | Raise a request for a locked field          |
+| PATCH  | `/profile/requests/:id/cancel`       | Bearer         | Withdraw your own pending request           |
+| GET    | `/profile/review/requests`           | Warden / Admin | The review queue, everyone's requests       |
+| PATCH  | `/profile/review/requests/:id`       | Warden / Admin | `{ decision: "APPROVED" \| "REJECTED", note }` |
+
+There is deliberately **no** `PATCH /auth/me`. Profile writes go through
+`PATCH /api/profile` so the field policy has exactly one enforcement point —
+do not add a second route that writes these columns.
 
 Validation failures return `400` with per-field messages:
 
@@ -179,6 +300,44 @@ which emails are registered.
 
 ---
 
+---
+
+## Profile permissions
+
+Students cannot edit institutional facts about themselves. Each field carries one
+of three access levels, defined per role in
+`backend/src/modules/profile/profile.policy.js` — **the single source of truth**:
+
+| Access      | Meaning                                                        |
+| ----------- | -------------------------------------------------------------- |
+| `SELF`      | Edit it directly with `PATCH /api/profile`                      |
+| `REQUEST`   | Locked — raise a request for a warden or admin to approve       |
+| `READ_ONLY` | Never editable through the profile module                       |
+
+|             | Student  | Staff    | Warden   | Admin    |
+| ----------- | -------- | -------- | -------- | -------- |
+| Phone       | SELF     | SELF     | SELF     | SELF     |
+| Name        | REQUEST  | REQUEST  | SELF     | SELF     |
+| Room / Block| REQUEST  | REQUEST  | SELF     | SELF     |
+| Email       | REQUEST  | REQUEST  | REQUEST  | SELF     |
+| Roll number | REQUEST  | REQUEST  | REQUEST  | REQUEST  |
+| Role        | READ_ONLY| READ_ONLY| READ_ONLY| READ_ONLY|
+
+`GET /api/profile` ships this table to the browser, so the UI renders each input
+editable, locked, or read-only purely from the server's answer — there is no
+second copy of the rules in the frontend. **Change a permission in
+`profile.policy.js` and both sides follow.**
+
+The request lifecycle: `PENDING → APPROVED | REJECTED | CANCELLED`. Approving
+copies `newValue` onto the user row inside a transaction. Guards worth knowing:
+
+- Only one open request per field, per user.
+- A mixed `PATCH` containing even one locked field is rejected whole — never a
+  partial write.
+- Uniqueness on email and roll number is re-checked at approval time, not just
+  when the request was raised.
+- Reviewers cannot approve their own requests.
+
 ## Data model
 
 `User` — students, wardens, admins and staff. Unique on both `email` and
@@ -196,6 +355,9 @@ RESOLVED → CLOSED`), optional photo and assignee.
 student, each with a balance, an optional spending PIN, and a transaction
 ledger. Wallets are created automatically at signup.
 
+`ProfileChangeRequest` — the approval ticket: which field, old and new value,
+the requester's reason, status, and who reviewed it with what note.
+
 After editing `prisma/schema.prisma`:
 
 ```bash
@@ -206,7 +368,7 @@ docker compose exec backend npx prisma migrate dev --name describe_your_change
 
 ## Adding a feature
 
-The auth module is the template. For outpasses:
+The auth and profile modules are the template. For outpasses:
 
 1. `src/modules/outpass/outpass.schema.js` — zod shapes for the request body.
 2. `src/modules/outpass/outpass.service.js` — Prisma queries, no HTTP concerns.
@@ -236,14 +398,14 @@ You have a local PostgreSQL running. Change `POSTGRES_PORT` in `.env` to e.g.
 `5433` — this only affects the port exposed on your machine, not the one the
 backend container uses.
 
-**Frontend changes don't hot-reload in Docker**
-Bind-mount file events are unreliable on Windows and macOS. `CHOKIDAR_USEPOLLING`
-is already set to `true` in `docker-compose.yml`; if it still misbehaves, run
-the frontend on your host with `npm run dev` instead.
+**Changes don't hot-reload in Docker**
+See [Seeing your changes](#seeing-your-changes) above — both services poll,
+because bind-mount file events are unreliable on Windows and macOS. If polling
+still misbehaves, run that service on your host with `npm run dev` instead.
 
-**`npm ci` fails inside the backend container after adding a package**
-Rebuild rather than restarting: `docker compose up -d --build backend`. The
-`node_modules` volume is intentionally separate from your host folder.
+**`sh: <package>: not found` after adding a dependency**
+The `node_modules` volume is masking the rebuilt image — a rebuild on its own
+does not refresh it. See [Adding a dependency](#adding-a-dependency) above.
 
 **Everything is wedged**
 `docker compose down -v && docker compose up -d --build`, then migrate and seed

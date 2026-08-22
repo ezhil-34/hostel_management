@@ -107,8 +107,22 @@ export const authApi = {
   signin: (payload) => api.post('/auth/signin', payload, { auth: false }),
   logout: () => api.post('/auth/logout', undefined, { auth: false }),
   me: () => api.get('/auth/me'),
-  updateProfile: (payload) => api.patch('/auth/me', payload),
   changePassword: (payload) => api.post('/auth/change-password', payload),
+};
+
+export const profileApi = {
+  /** Profile + the per-role field policy the UI renders from. */
+  get: () => api.get('/profile'),
+  /** Only fields the policy marks editable; anything else returns 403. */
+  update: (payload) => api.patch('/profile', payload),
+
+  listMyRequests: (status = 'ALL') => api.get(`/profile/requests?status=${status}`),
+  createRequest: (payload) => api.post('/profile/requests', payload),
+  cancelRequest: (id) => api.patch(`/profile/requests/${id}/cancel`),
+
+  // Warden / admin only.
+  listAllRequests: (status = 'ALL') => api.get(`/profile/review/requests?status=${status}`),
+  review: (id, payload) => api.patch(`/profile/review/requests/${id}`, payload),
 };
 
 export default api;

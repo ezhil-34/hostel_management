@@ -164,17 +164,6 @@ export const logout = async (token) => {
 export const getProfile = (userId) =>
   prisma.user.findUnique({ where: { id: userId }, select: publicUserSelect });
 
-/** Drops keys the client omitted so a PATCH never blanks an existing value. */
-const stripUndefined = (obj) =>
-  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
-
-export const updateProfile = (userId, data) =>
-  prisma.user.update({
-    where: { id: userId },
-    data: stripUndefined(data),
-    select: publicUserSelect,
-  });
-
 export const changePassword = async (userId, { currentPassword, newPassword }) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw ApiError.notFound('User not found');

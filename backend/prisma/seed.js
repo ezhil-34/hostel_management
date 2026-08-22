@@ -47,6 +47,19 @@ async function main() {
     },
   });
 
+  await prisma.user.upsert({
+    where: { email: 'admin@hostel.edu' },
+    update: {},
+    create: {
+      name: 'System Admin',
+      email: 'admin@hostel.edu',
+      rollNumber: 'ADMIN-01',
+      phone: '+91 90000 00001',
+      passwordHash,
+      role: 'ADMIN',
+    },
+  });
+
   for (const student of students) {
     const user = await prisma.user.upsert({
       where: { email: student.email },
@@ -115,8 +128,25 @@ async function main() {
     }
   }
 
+  // One pending request so the warden's Approvals tab is not empty on a fresh
+  // install and the review flow can be tried straight away.
+  const priya = await prisma.user.findUnique({ where: { email: 'priya@student.edu' } });
+  if (priya && (await prisma.profileChangeRequest.count({ where: { userId: priya.id } })) === 0) {
+    await prisma.profileChangeRequest.create({
+      data: {
+        reference: `PCR-${Math.floor(100000 + Math.random() * 900000).toString(16).toUpperCase()}`,
+        userId: priya.id,
+        field: 'roomNo',
+        oldValue: priya.roomNo,
+        newValue: 'A-204',
+        reason: 'The hostel office reallocated me to A-204 after the block maintenance.',
+      },
+    });
+  }
+
   console.log('Seed complete.');
-  console.log(`  warden@hostel.edu / ${DEMO_PASSWORD}`);
+  console.log(`  admin@hostel.edu  / ${DEMO_PASSWORD}   (admin)`);
+  console.log(`  warden@hostel.edu / ${DEMO_PASSWORD}   (warden — has 1 request to review)`);
   console.log(`  john@student.edu  / ${DEMO_PASSWORD}   (roll 21CS104)`);
   console.log(`  priya@student.edu / ${DEMO_PASSWORD}   (roll 21EC211)`);
 }

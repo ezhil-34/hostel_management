@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Building2, ArrowLeft, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { ApiRequestError } from '../lib/api';
 
 const FIELDS = [
@@ -34,6 +35,7 @@ const FIELDS = [
 export default function SignUpPage() {
   const navigate = useNavigate();
   const { signup } = useAuth();
+  const toast = useToast();
 
   const [formData, setFormData] = useState({
     name: '',
@@ -55,14 +57,21 @@ export default function SignUpPage() {
 
     try {
       // Signing up logs you straight in — no second trip through /signin.
-      await signup(formData);
+      const created = await signup(formData);
+      toast.success(
+        `Welcome, ${created.name.split(' ')[0]}`,
+        'Your account is ready. Room and roll number changes need warden approval.',
+      );
       navigate('/', { replace: true });
     } catch (err) {
       if (err instanceof ApiRequestError) {
         setError(err.message);
         setFieldErrors(err.fieldErrors);
+        toast.error('Could not create account', err.message);
       } else {
-        setError('Could not reach the server. Is the backend running?');
+        const message = 'Could not reach the server. Is the backend running?';
+        setError(message);
+        toast.error('Could not create account', message);
       }
     } finally {
       setSubmitting(false);

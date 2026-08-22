@@ -3,12 +3,7 @@ import rateLimit from 'express-rate-limit';
 import validate from '../../middleware/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
 import * as controller from './auth.controller.js';
-import {
-  signupSchema,
-  signinSchema,
-  updateProfileSchema,
-  changePasswordSchema,
-} from './auth.schema.js';
+import { signupSchema, signinSchema, changePasswordSchema } from './auth.schema.js';
 
 const router = Router();
 
@@ -27,7 +22,9 @@ router.post('/refresh', controller.refresh);
 router.post('/logout', controller.logout);
 
 router.get('/me', requireAuth, controller.me);
-router.patch('/me', requireAuth, validate(updateProfileSchema), controller.updateMe);
+// Profile edits live at PATCH /api/profile — that route enforces the per-role
+// field policy, so there must not be a second, unguarded way to write these
+// columns. Do not reintroduce PATCH /auth/me.
 router.post(
   '/change-password',
   requireAuth,
