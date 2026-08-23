@@ -37,7 +37,7 @@ async function main() {
 
   const warden = await prisma.user.upsert({
     where: { email: 'warden@hostel.edu' },
-    update: {},
+    update: { passwordHash, isActive: true },
     create: {
       name: 'Hostel Warden',
       email: 'warden@hostel.edu',
@@ -50,7 +50,7 @@ async function main() {
 
   await prisma.user.upsert({
     where: { email: 'admin@hostel.edu' },
-    update: {},
+    update: { passwordHash, isActive: true },
     create: {
       name: 'System Admin',
       email: 'admin@hostel.edu',
@@ -69,14 +69,14 @@ async function main() {
   ]) {
     await prisma.user.upsert({
       where: { email },
-      update: {},
+      update: { passwordHash, isActive: true },
       create: { name, email, rollNumber: roll, phone, passwordHash, role: 'MAINTENANCE_WORKER' },
     });
   }
 
   const security = await prisma.user.upsert({
     where: { email: 'security@hostel.edu' },
-    update: {},
+    update: { passwordHash, isActive: true },
     create: {
       name: 'Gate Security',
       email: 'security@hostel.edu',
@@ -90,7 +90,7 @@ async function main() {
   for (const student of students) {
     const user = await prisma.user.upsert({
       where: { email: student.email },
-      update: {},
+      update: { passwordHash, isActive: true },
       create: {
         ...student,
         passwordHash,

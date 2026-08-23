@@ -3,6 +3,7 @@ import prisma from '../config/prisma.js';
 import authRoutes from '../modules/auth/auth.routes.js';
 import profileRoutes from '../modules/profile/profile.routes.js';
 import outpassRoutes from '../modules/outpass/outpass.routes.js';
+import pointsRoutes from '../modules/points/points.routes.js';
 
 const router = Router();
 
@@ -27,9 +28,9 @@ router.get('/health/db', async (_req, res) => {
 router.use('/auth', authRoutes);
 router.use('/profile', profileRoutes);
 router.use('/outpasses', outpassRoutes);
+router.use('/points', pointsRoutes);
 
 // Feature routers land here as they are built:
 // router.use('/maintenance', maintenanceRoutes);
-// router.use('/points', pointsRoutes);
 
 export default router;

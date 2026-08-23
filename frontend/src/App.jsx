@@ -4,6 +4,7 @@ import HomePage from './pages/HomePage';
 import OutpassPage from './pages/OutpassPage';
 import MaintenancePage from './pages/MaintenancePage';
 import PointsPage from './pages/PointsPage';
+import PointsPayPage from './pages/PointsPayPage';
 import ProfilePage from './pages/ProfilePage';
 import GateVerifyPage from './pages/GateVerifyPage';
 import SignInPage from './pages/SignInPage';
@@ -19,6 +20,7 @@ const protectedRoutes = [
   // Served by the maintenance service; the gateway routes /api/maintenance there.
   { path: '/maintenance', element: <MaintenancePage /> },
   { path: '/points', element: <PointsPage /> },
+  { path: '/points/pay/:token', element: <PointsPayPage /> },
   { path: '/profile', element: <ProfilePage /> },
   // Where an outpass QR code lands. Protected, so an unauthenticated scan is
   // sent to sign-in and returned here afterwards.

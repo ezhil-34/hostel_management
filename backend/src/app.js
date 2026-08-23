@@ -36,7 +36,7 @@ export const createApp = () => {
   app.use(
     rateLimit({
       windowMs: 60 * 1000,
-      limit: 300,
+      limit: env.isProd ? 300 : 5000,
       standardHeaders: 'draft-7',
       legacyHeaders: false,
     }),

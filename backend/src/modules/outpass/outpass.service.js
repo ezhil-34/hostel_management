@@ -128,7 +128,7 @@ export const createOutpass = async (userId, input) => {
     // help here because there is no row yet to swap on, so take a per-student
     // advisory lock instead: it is held until this transaction ends and blocks
     // only that one student's concurrent creates.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${OUTPASS_LOCK_NAMESPACE}, hashtext(${userId}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(CAST(${OUTPASS_LOCK_NAMESPACE} AS integer), hashtext(${userId}))`;
 
     const open = await tx.outpass.findFirst({
       where: openPassFilter(userId),
