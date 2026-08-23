@@ -1,14 +1,40 @@
 # SmartHostel — Hostel Management System
 
-Full-stack hostel management app: outpass requests with QR verification, maintenance
-tickets, and a canteen/laundry points wallet.
+Full-stack hostel management app: outpass requests with QR verification, a
+maintenance service where students log repair jobs and hostel trade workers pick
+them up, and a canteen/laundry points wallet.
 
 | Layer    | Stack                                                         |
 | -------- | ------------------------------------------------------------- |
 | Frontend | React 19 · Vite 8 · Tailwind CSS 3 · React Router 7 · lucide-react |
-| Backend  | Node.js 22 · Express 5 (ESM) · JWT auth · zod validation       |
-| Database | PostgreSQL 16 · Prisma ORM 6                                   |
+| Services | Node.js 22 · Express 5 (ESM) · JWT auth · zod validation       |
+| Database | PostgreSQL 16 · Prisma ORM 6 — one database per service        |
 | Runtime  | Docker Compose (dev + production stacks)                       |
+
+## Services
+
+```
+                    ┌───────────────────────────┐
+  browser ─────────▶│ gateway                   │
+                    │ nginx (prod) / Vite (dev) │
+                    └────┬─────────────────┬────┘
+       /api/maintenance ─┘                 └─ /api/*
+                    │                            │
+        ┌───────────▼──────────┐      ┌──────────▼─────────┐
+        │ maintenance-service  │      │ backend (core API) │
+        │ :5100                │      │ :5000              │
+        │ repair jobs, workers │      │ auth, profile,     │
+        │                      │      │ outpass            │
+        └───────────┬──────────┘      └──────────┬─────────┘
+                    │                            │
+            ┌───────▼────────┐         ┌────────▼──────┐
+            │ maintenance_db │         │ hostel_db     │
+            └────────────────┘         └───────────────┘
+```
+
+The browser only ever sees `/api` — the gateway decides which service answers, so
+`src/lib/api.js` looks the same for both. See [Maintenance](#maintenance) for how
+the two services stay decoupled.
 
 ---
 
@@ -37,12 +63,16 @@ docker compose exec backend npm run db:seed
 | Database health | http://localhost:5000/api/health/db                           |
 | Adminer (DB UI) | http://localhost:8080 — start with `docker compose --profile tools up -d` |
 
+If you are adding the maintenance service to an **existing** install, its
+database will not create itself — see [Maintenance](#maintenance).
+
 Demo logins after seeding (password `Password123`):
 
 - `john@student.edu` — roll `21CS104`; no outpass yet, so he can walk the whole flow
 - `priya@student.edu` — roll `21EC211`; currently out and an hour overdue
 - `warden@hostel.edu` — warden; one profile request and one overdue pass waiting
 - `security@hostel.edu` — gate guard; scans outpass QR codes
+- `worker@hostel.edu` / `worker2@hostel.edu` — maintenance workers; see the job queue
 - `admin@hostel.edu` — administrator
 
 Everyday commands:
@@ -197,6 +227,18 @@ hostel_management/
 │           ├── auth/             # routes → controller → service → schema
 │           ├── profile/          # + profile.policy.js (field permissions)
 │           └── outpass/          # request → approve → gate scan → return
+│
+├── maintenance-service/          # its own process, image, database, migrations
+│   ├── Dockerfile
+│   ├── prisma/
+│   │   ├── schema.prisma         # maintenance_db — no FK reaches hostel_db
+│   │   └── seed.js
+│   └── src/
+│       ├── clients/coreApi.js    # the ONE outbound call, at write time only
+│       ├── middleware/           # its own copy of the JWT guard — see below
+│       └── modules/maintenance/  # report → accept → resolve → close
+│
+├── postgres/init/                # creates maintenance_db on a FRESH volume
 │
 └── frontend/
     ├── Dockerfile                # multi-stage: development | build | nginx
@@ -401,6 +443,33 @@ another for good.
 the two mirror `markExit`'s checks exactly — so the guard is only ever shown a
 button that will actually work.
 
+### Concurrency
+
+Every rule above is a read followed by a write, and two requests can slip
+between the two. Two guards scanning one QR, a warden double-clicking Approve,
+a student's phone retrying a submit — all of them would otherwise write twice.
+
+**State changes use compare-and-swap.** The expected status goes in the `WHERE`
+clause, so the decision and the write are one atomic statement:
+
+```js
+// outpass.service.js — returns null if someone else got there first
+const transition = async (id, fromStatus, data) => {
+  const { count } = await prisma.outpass.updateMany({ where: { id, status: fromStatus }, data });
+  return count === 0 ? null : prisma.outpass.findUnique({ where: { id }, select: outpassSelect });
+};
+```
+
+The loser gets a `409` explaining what happened, never a corrupt record. The
+same pattern guards profile-request review and refresh-token rotation — one
+token cannot mint two sessions.
+
+**Creating a pass takes a per-student advisory lock.** There is no row yet to
+compare-and-swap on, so `createOutpass` wraps the check-and-insert in a
+transaction holding `pg_advisory_xact_lock(4711, hashtext(userId))`. It blocks
+only that one student's concurrent creates and is released when the transaction
+ends, however it ends.
+
 ### The QR code
 
 `APP_PUBLIC_URL` + `/verify/<token>`, where the token is 32 random bytes minted
@@ -423,6 +492,126 @@ reviewer needs to decide, not to walk people through the gate.
 
 ---
 
+## Maintenance
+
+Maintenance runs in **its own service**, with its own database, image and
+migrations. Restarting or rebuilding it does not touch the core API, and the core
+API knows nothing about it beyond one enum member on `Role`.
+
+```
+OPEN ──worker accepts──▶ ACCEPTED ──worker resolves──▶ RESOLVED ──student confirms──▶ CLOSED
+ │                                                        │
+ └──student withdraws──▶ WITHDRAWN                        └──student reopens──▶ ACCEPTED
+```
+
+A student logs a fault — a leaking tap, a dead tube light, no hot water — picking
+the trade it belongs to. It lands in an open pool. A maintenance worker accepts
+it, fixes it, and resolves it with a note saying what they did. The student gets
+an update badge and either confirms the fix or reopens the job.
+
+Trades: `PLUMBING`, `ELECTRICAL`, `CARPENTRY`, `HOUSEKEEPING`, `INTERNET`,
+`APPLIANCE`, `PEST_CONTROL`, `OTHER`.
+
+**There is deliberately no anonymous mode.** A worker has to know which room to
+go to and who to call when they get there — unlike a grievance system, hiding the
+reporter would make the job undoable. The reporter's name, roll number, room and
+phone are snapshotted onto the request at write time.
+
+### Adding it to an existing install
+
+The Postgres init script only runs on a **fresh** volume, so create the database
+once by hand, then migrate:
+
+```bash
+# -d hostel_db matters: without it psql looks for a database named after the
+# user ("hostel"), which does not exist.
+docker compose exec postgres psql -U hostel -d hostel_db -c "CREATE DATABASE maintenance_db;"
+docker compose up -d --build maintenance-service
+docker compose exec maintenance-service npx prisma migrate dev --name init
+docker compose exec maintenance-service npm run db:seed
+
+# the core API gains one enum member: MAINTENANCE_WORKER
+docker compose exec backend npx prisma migrate dev --name maintenance_worker_role
+docker compose exec backend npm run db:seed
+docker compose restart backend
+```
+
+### How the two services stay decoupled
+
+**Auth needs no network call.** The maintenance service verifies the access token
+itself with the shared `JWT_ACCESS_SECRET`. The contract between the services is
+the *token* — `sub`, `role`, `email` — not shared code. It has no users table and
+never looks one up, so a worker's permissions are decided locally in microseconds
+even if the core API is unreachable.
+
+**No cross-service foreign keys.** `MaintenanceRequest.studentId` is a bare uuid
+pointing at a row in `hostel_db`. Joining across is physically impossible, which
+is the point. Names and rooms are **snapshotted** at write time, so a room change
+next term does not rewrite where last April's leaking tap was.
+
+**One synchronous dependency, at write time only.** The token carries no name, and
+trusting the browser would let a student log a job under someone else's room. So
+reporting calls `GET /api/auth/me` with the caller's own token — the service holds
+no service account and can never read more than the user could.
+
+**It degrades rather than fails.** If the core API is down: reads keep working,
+and a job can still be logged as long as the reporter supplies a room (without a
+room and without the snapshot the service refuses clearly, rather than filing a
+job nobody can find). `/api/maintenance/health` stays **200** while reporting
+`coreApi: unreachable` — failing our own health check because a different service
+is down would let one outage cascade into two.
+
+**Duplicated infrastructure, on purpose.** `ApiError`, `validate`, the error
+handler and the JWT guard are copied rather than imported so the service stays
+independently deployable. The cost is drift; `.verify/cross-service-auth.mjs` is
+the contract test that catches it — it mints tokens with the core API's real
+signing code and presents them to the running maintenance service.
+
+### Endpoints — all under `/api/maintenance`
+
+| Method | Path | Who | Purpose |
+| --- | --- | --- | --- |
+| POST | `/` | any | Log a job |
+| GET | `/` | any | Own requests (`?status=`, `?category=`) |
+| GET | `/:id` | owner or handler | Detail + comments + timeline |
+| PATCH | `/:id/withdraw` | owner | Withdraw while `OPEN` |
+| POST | `/:id/comments` | owner or handler | Add a message (`isInternal` for handlers) |
+| POST | `/:id/reopen` | owner | Not actually fixed — back to the same worker |
+| POST | `/:id/close` | owner | Confirm the fix |
+| GET | `/queue` | Worker | Open pool + own accepted work, urgent first |
+| POST | `/:id/accept` | Worker | Claim it |
+| POST | `/:id/resolve` | Worker, Warden/Admin | Mark done with a note |
+| GET | `/admin` | Warden/Admin | Everything, with counts |
+| POST | `/:id/reassign` | Warden/Admin | Hand it to another worker |
+| GET | `/health` | – | Liveness + core API reachability |
+
+Every status change uses the same **compare-and-swap** pattern as the outpass
+module — the expected status sits in the `WHERE` clause of the update, so two
+workers tapping Accept at the same instant produce exactly one owner and the
+loser gets a `409` naming who beat them. The concurrency suite proves it: run
+against a deliberately un-guarded version of `transition()`, 3 of 5 simultaneous
+accepts get through.
+
+Internal notes (`isInternal`) are handler-only triage — the student's detail
+view never receives one, and a student attempting to post one is refused rather
+than silently downgraded. Timeline entries never carry `actorId`.
+
+`hasUnreadUpdate` is derived, not stored: true when the last status change is
+newer than the student's last view. Same reasoning as `isOverdue` and
+`isExpired` — no scheduler, correct the moment it is read.
+
+### Proving the architecture
+
+Two things demonstrate that these really are separate services:
+
+```bash
+docker compose stop backend            # log a job → still works
+docker compose stop maintenance-service # outpass and profile keep working
+```
+
+---
+
+
 ## Data model
 
 `User` — students, wardens, admins and staff. Unique on both `email` and
@@ -434,9 +623,6 @@ reviewer needs to decide, not to walk people through the gate.
 their note, the `verifyToken` behind the QR, and the gate log (`exitedAt`,
 `returnedAt`, and which guard recorded each). See [Outpasses](#outpasses) above.
 
-`MaintenanceRequest` — category, description, status (`OPEN → IN_PROGRESS →
-RESOLVED → CLOSED`), optional photo and assignee.
-
 `Wallet` + `PointTransaction` — one `CANTEEN` and one `LAUNDRY` wallet per
 student, each with a balance, an optional spending PIN, and a transaction
 ledger. Wallets are created automatically at signup.
@@ -444,29 +630,39 @@ ledger. Wallets are created automatically at signup.
 `ProfileChangeRequest` — the approval ticket: which field, old and new value,
 the requester's reason, status, and who reviewed it with what note.
 
-After editing `prisma/schema.prisma`:
+`maintenance_db` is a **separate database** with its own schema —
+`MaintenanceRequest`, `MaintenanceComment` and the append-only
+`MaintenanceEvent` timeline. See [Maintenance](#maintenance).
+
+After editing a schema, migrate the service that owns it:
 
 ```bash
 docker compose exec backend npx prisma migrate dev --name describe_your_change
+docker compose exec maintenance-service npx prisma migrate dev --name describe_your_change
 ```
 
 ---
 
 ## Adding a feature
 
-The auth, profile and outpass modules are the template. For maintenance:
+Every module in both services has the same four files. Copy `outpass/` (core API)
+or `maintenance/` (maintenance service) and rename:
 
-1. `src/modules/maintenance/maintenance.schema.js` — zod shapes for the body.
-2. `src/modules/maintenance/maintenance.service.js` — Prisma queries and all
-   business rules, no HTTP concerns.
-3. `src/modules/maintenance/maintenance.controller.js` — read the request, call
-   the service, shape the response.
-4. `src/modules/maintenance/maintenance.routes.js` — wire it with `requireAuth`,
-   `requireRole(...)` and `validate(...)`.
-5. Register it in `src/routes/index.js` (the placeholder is already there).
+1. `<name>.schema.js` — zod shapes for body, query and params.
+2. `<name>.service.js` — Prisma queries and all business rules, no HTTP concerns.
+   Status changes go through a `transition()` compare-and-swap, never a
+   read-then-write.
+3. `<name>.controller.js` — read the request, call the service, shape the response.
+4. `<name>.routes.js` — wire it with `requireAuth`, `requireRole(...)` and
+   `validate(...)`, then register it in `src/routes/index.js`.
 
-On the frontend, add the calls to `src/lib/api.js` and replace the `useState`
-seed arrays in the page with data fetched from the API.
+**Whose service does it belong in?** If the feature needs to join against `User`,
+it goes in the core API. If it can live off a bare `studentId` plus a snapshot,
+it can be its own service — copy `maintenance-service/` as the template.
+
+On the frontend, add the calls to `src/lib/api.js`. A new service also needs a
+proxy entry in `vite.config.js` and a `location` in `nginx.conf`, both placed
+**before** the general `/api` rule.
 
 ---
 
@@ -501,6 +697,26 @@ You have a local PostgreSQL running. Change `POSTGRES_PORT` in `.env` to e.g.
 `5433` — this only affects the port exposed on your machine, not the one the
 backend container uses.
 
+**`Request failed (502)` on the maintenance page, but the service is healthy**
+The gateway could not reach it, which is a different thing from the service being
+down — if maintenance were down you would get a readable 503 instead. Check
+`docker compose ps`: if `hostel_frontend` was **created** before the last change
+to `docker-compose.yml`, its environment is stale and
+`VITE_MAINTENANCE_PROXY_TARGET` is unset, so Vite falls back to
+`http://localhost:5100` — which, inside the frontend container, is the frontend
+itself. Recreate it:
+
+```bash
+docker compose up -d frontend
+```
+
+**`restart` is not `up -d`**
+`docker compose restart` re-runs the process inside the *existing* container. It
+never re-reads `docker-compose.yml`, so a changed environment variable, port or
+volume is silently ignored. After editing the compose file always use
+`docker compose up -d <service>`, which recreates the container when the config
+has drifted. Source-code changes need neither — both services watch their files.
+
 **Changes don't hot-reload in Docker**
 See [Seeing your changes](#seeing-your-changes) above — both services poll,
 because bind-mount file events are unreliable on Windows and macOS. If polling
@@ -510,6 +726,16 @@ still misbehaves, run that service on your host with `npm run dev` instead.
 The `node_modules` volume is masking the rebuilt image — a rebuild on its own
 does not refresh it. See [Adding a dependency](#adding-a-dependency) above.
 
+**Maintenance returns 500, or `relation "MaintenanceRequest" does not exist`**
+The maintenance service's own database was never created or never migrated. It
+is a separate database from `hostel_db` — see
+[Adding it to an existing install](#adding-it-to-an-existing-install).
+
+**Maintenance health reports `coreApi: unreachable`**
+That is informational, not an error — the service is up and serving. It means the
+core API is down, so newly logged jobs will not carry a reporter snapshot unless
+the room is supplied. Start the backend and it clears itself.
+
 **Everything is wedged**
 `docker compose down -v && docker compose up -d --build`, then migrate and seed
-again. This deletes the database.
+**both** services again. This deletes both databases.

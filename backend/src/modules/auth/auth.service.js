@@ -142,11 +142,18 @@ export const refresh = async (token) => {
 
   if (!user || !user.isActive) throw ApiError.unauthorized('Account no longer active');
 
-  // Rotate: the old token is retired the moment a new one is issued.
-  await prisma.refreshToken.update({
-    where: { id: stored.id },
+  // Rotate by compare-and-swap: revoke the token *only if it is still live*.
+  // Two requests arriving with the same token both pass the check above, so
+  // without this both would be handed a fresh session off one token. Postgres
+  // settles it — `count` is 1 for exactly one of them.
+  const { count } = await prisma.refreshToken.updateMany({
+    where: { id: stored.id, revokedAt: null },
     data: { revokedAt: new Date() },
   });
+
+  if (count === 0) {
+    throw ApiError.unauthorized('This refresh token has already been used');
+  }
 
   const { isActive: _active, ...safe } = user;
   const tokens = await issueTokens(safe);

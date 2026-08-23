@@ -1,8 +1,25 @@
 import React from 'react';
-import { Clock, CheckCircle2, XCircle, Ban, DoorOpen, AlertTriangle, CalendarX } from 'lucide-react';
+import {
+  Clock,
+  CheckCircle2,
+  XCircle,
+  Ban,
+  DoorOpen,
+  AlertTriangle,
+  CalendarX,
+  Inbox,
+  Wrench,
+} from 'lucide-react';
 
 const STATUS = {
   PENDING: { label: 'Pending review', Icon: Clock, className: 'bg-amber-100 text-amber-700' },
+
+  // Maintenance lifecycle. OPEN/ACCEPTED are distinct from the outpass statuses
+  // above, so they get their own entries rather than being aliased.
+  OPEN: { label: 'Open', Icon: Inbox, className: 'bg-amber-100 text-amber-700' },
+  ACCEPTED: { label: 'Being worked on', Icon: Wrench, className: 'bg-blue-100 text-blue-700' },
+  RESOLVED: { label: 'Resolved', Icon: CheckCircle2, className: 'bg-emerald-100 text-emerald-700' },
+  WITHDRAWN: { label: 'Withdrawn', Icon: Ban, className: 'bg-slate-100 text-slate-600' },
   APPROVED: { label: 'Approved', Icon: CheckCircle2, className: 'bg-emerald-100 text-emerald-700' },
   REJECTED: { label: 'Rejected', Icon: XCircle, className: 'bg-red-100 text-red-700' },
   CANCELLED: { label: 'Cancelled', Icon: Ban, className: 'bg-slate-100 text-slate-600' },

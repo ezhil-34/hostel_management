@@ -58,4 +58,11 @@ export const signinSchema = z.object({
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, 'Current password is required'),
   newPassword: passwordField,
+  /**
+   * Browsers send the refresh token as an httpOnly cookie, but Postman and
+   * mobile clients cannot. It has to be declared here or zod strips it from the
+   * body before the controller sees it — and the handler would then revoke the
+   * caller's own session along with everyone else's.
+   */
+  refreshToken: optional(z.string()),
 });
