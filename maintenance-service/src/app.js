@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 
 import env from './config/env.js';
@@ -12,15 +11,12 @@ import { errorHandler, notFoundHandler } from './middleware/error.js';
 export const createApp = () => {
   const app = express();
 
-  // Behind nginx / a container proxy, trust the first hop so rate limiting
-  // and secure cookies see the real client IP and protocol.
   app.set('trust proxy', 1);
 
   app.use(helmet());
   app.use(
     cors({
       origin(origin, callback) {
-        // Allow same-origin / server-to-server requests that send no Origin.
         if (!origin || env.corsOrigins.includes(origin)) return callback(null, true);
         return callback(new Error(`Origin ${origin} is not allowed by CORS`));
       },
@@ -29,8 +25,6 @@ export const createApp = () => {
   );
 
   app.use(express.json({ limit: '1mb' }));
-  app.use(express.urlencoded({ extended: true }));
-  app.use(cookieParser());
   app.use(morgan(env.isProd ? 'combined' : 'dev'));
 
   app.use(
@@ -42,7 +36,10 @@ export const createApp = () => {
     }),
   );
 
-  app.use('/api', routes);
+  // Mounted where the gateway sends it, so the path a browser uses and the path
+  // this service sees are the same — one less thing to reason about when
+  // debugging a proxy rule.
+  app.use('/api/maintenance', routes);
 
   // Hitting the port in a browser lands here. A bare 404 reads like the service
   // is broken when it is merely an API with nothing mounted at the root, so
@@ -51,9 +48,9 @@ export const createApp = () => {
     res.json({
       success: true,
       data: {
-        service: 'core-api',
-        message: 'API only — every route lives under /api.',
-        health: '/api/health',
+        service: 'maintenance-service',
+        message: 'API only — every route lives under /api/maintenance.',
+        health: '/api/maintenance/health',
         app: 'http://localhost:5173',
       },
     });

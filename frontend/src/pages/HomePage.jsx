@@ -126,7 +126,7 @@ export default function HomePage() {
               </div>
               <h3 className="text-2xl font-bold text-slate-900 mb-3">Maintenance</h3>
               <p className="text-slate-500 text-sm leading-relaxed mb-6">
-                Report hostel issues, upload photos, track complaints, and stay updated until the issue is resolved.
+                Report a fault in your room, watch a worker pick it up, and confirm it when the repair is done.
               </p>
             </div>
             <Link

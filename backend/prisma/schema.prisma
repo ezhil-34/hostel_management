@@ -14,12 +14,16 @@ datasource db {
 // Enums
 // ---------------------------------------------------------------------------
 
+/// MAINTENANCE_WORKER exists for the maintenance service, which reads the role
+/// straight off the JWT. The core API stores it and hands it out; it holds no
+/// other knowledge of maintenance — that domain and its tables moved out.
 enum Role {
   STUDENT
   WARDEN
   ADMIN
   STAFF
   SECURITY
+  MAINTENANCE_WORKER
 }
 
 /// PENDING → APPROVED → ACTIVE → COMPLETED is the happy path.
@@ -32,22 +36,6 @@ enum OutpassStatus {
   ACTIVE
   COMPLETED
   CANCELLED
-}
-
-enum MaintenanceCategory {
-  PLUMBING
-  ELECTRICAL
-  CARPENTRY
-  HOUSEKEEPING
-  INTERNET
-  OTHER
-}
-
-enum MaintenanceStatus {
-  OPEN
-  IN_PROGRESS
-  RESOLVED
-  CLOSED
 }
 
 enum WalletType {
@@ -87,7 +75,6 @@ model User {
 
   outpasses           Outpass[]
   reviewedOutpasses   Outpass[]              @relation("OutpassReviewer")
-  maintenanceRequests MaintenanceRequest[]
   wallets             Wallet[]
   refreshTokens       RefreshToken[]
   changeRequests      ProfileChangeRequest[] @relation("RequestedBy")
@@ -173,26 +160,6 @@ model Outpass {
   @@index([userId, status])
   @@index([status, returnAt])
   @@map("outpasses")
-}
-
-model MaintenanceRequest {
-  id          String              @id @default(uuid()) @db.Uuid
-  reference   String              @unique
-  userId      String              @map("user_id") @db.Uuid
-  roomNo      String              @map("room_no")
-  category    MaintenanceCategory
-  description String
-  status      MaintenanceStatus   @default(OPEN)
-  imageUrl    String?             @map("image_url")
-  assignedTo  String?             @map("assigned_to")
-  resolvedAt  DateTime?           @map("resolved_at")
-  createdAt   DateTime            @default(now()) @map("created_at")
-  updatedAt   DateTime            @updatedAt @map("updated_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, status])
-  @@map("maintenance_requests")
 }
 
 model Wallet {

@@ -61,6 +61,19 @@ async function main() {
     },
   });
 
+  // Two workers so the "another worker already picked this up" path can be
+  // tried by hand, not just in tests.
+  for (const [name, email, roll, phone] of [
+    ['Ravi Kumar', 'worker@hostel.edu', 'WRK-01', '+91 90000 00003'],
+    ['Anita Desai', 'worker2@hostel.edu', 'WRK-02', '+91 90000 00004'],
+  ]) {
+    await prisma.user.upsert({
+      where: { email },
+      update: {},
+      create: { name, email, rollNumber: roll, phone, passwordHash, role: 'MAINTENANCE_WORKER' },
+    });
+  }
+
   const security = await prisma.user.upsert({
     where: { email: 'security@hostel.edu' },
     update: {},
@@ -142,18 +155,6 @@ async function main() {
       });
     }
 
-    if ((await prisma.maintenanceRequest.count({ where: { userId: user.id } })) === 0) {
-      await prisma.maintenanceRequest.create({
-        data: {
-          reference: ref('MNT'),
-          userId: user.id,
-          roomNo: user.roomNo ?? 'N/A',
-          category: 'PLUMBING',
-          description: 'Water leak in the attached washroom.',
-          status: 'IN_PROGRESS',
-        },
-      });
-    }
   }
 
   // One pending request so the warden's Approvals tab is not empty on a fresh
@@ -176,6 +177,8 @@ async function main() {
   console.log(`  admin@hostel.edu    / ${DEMO_PASSWORD}   (admin)`);
   console.log(`  warden@hostel.edu   / ${DEMO_PASSWORD}   (warden — 1 profile request, 1 overdue pass)`);
   console.log(`  security@hostel.edu / ${DEMO_PASSWORD}   (gate guard — scans outpass QR codes)`);
+  console.log(`  worker@hostel.edu   / ${DEMO_PASSWORD}   (maintenance worker — repair queue)`);
+  console.log(`  worker2@hostel.edu  / ${DEMO_PASSWORD}   (second worker, for the race)`);
   console.log(`  john@student.edu    / ${DEMO_PASSWORD}   (roll 21CS104 — no pass yet, request one)`);
   console.log(`  priya@student.edu   / ${DEMO_PASSWORD}   (roll 21EC211 — currently out, overdue)`);
 }

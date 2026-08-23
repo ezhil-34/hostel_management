@@ -177,9 +177,19 @@ export const cancelOwnRequest = async (userId, requestId) => {
     throw ApiError.badRequest(`This request was already ${request.status.toLowerCase()}`);
   }
 
-  return prisma.profileChangeRequest.update({
-    where: { id: requestId },
+  // Compare-and-swap: only cancel if it is *still* pending, so a cancel racing
+  // a warden's approval cannot undo a decision that already landed.
+  const { count } = await prisma.profileChangeRequest.updateMany({
+    where: { id: requestId, status: 'PENDING' },
     data: { status: 'CANCELLED', reviewedAt: new Date() },
+  });
+
+  if (count === 0) {
+    throw ApiError.conflict('This request was just reviewed — reload to see the outcome');
+  }
+
+  return prisma.profileChangeRequest.findUnique({
+    where: { id: requestId },
     select: requestSelect,
   });
 };
@@ -210,10 +220,19 @@ export const reviewRequest = async (reviewerId, requestId, { decision, note }) =
     reviewedAt: new Date(),
   };
 
+  const alreadyDecided = ApiError.conflict(
+    'Another reviewer just decided this request — reload the queue',
+  );
+
   if (decision === 'REJECTED') {
-    return prisma.profileChangeRequest.update({
-      where: { id: requestId },
+    const { count } = await prisma.profileChangeRequest.updateMany({
+      where: { id: requestId, status: 'PENDING' },
       data: reviewed,
+    });
+    if (count === 0) throw alreadyDecided;
+
+    return prisma.profileChangeRequest.findUnique({
+      where: { id: requestId },
       select: requestSelect,
     });
   }
@@ -222,17 +241,21 @@ export const reviewRequest = async (reviewerId, requestId, { decision, note }) =
   // someone else in the days since the request was raised.
   await assertUnique(request.field, request.newValue, request.userId);
 
-  const [, updatedRequest] = await prisma.$transaction([
-    prisma.user.update({
+  // Claim the request and write the value in one transaction. The status guard
+  // means two reviewers approving at the same instant produce one write, not
+  // two — and throwing inside rolls the whole thing back.
+  return prisma.$transaction(async (tx) => {
+    const { count } = await tx.profileChangeRequest.updateMany({
+      where: { id: requestId, status: 'PENDING' },
+      data: reviewed,
+    });
+    if (count === 0) throw alreadyDecided;
+
+    await tx.user.update({
       where: { id: request.userId },
       data: { [request.field]: request.newValue },
-    }),
-    prisma.profileChangeRequest.update({
-      where: { id: requestId },
-      data: reviewed,
-      select: requestSelect,
-    }),
-  ]);
+    });
 
-  return updatedRequest;
+    return tx.profileChangeRequest.findUnique({ where: { id: requestId }, select: requestSelect });
+  });
 };

@@ -1,0 +1,165 @@
+// SmartHostel — maintenance service data model.
+//
+// This service owns `maintenance_db` outright. Note what is NOT here: no User
+// model, and no foreign key anywhere pointing at one. `studentId`, `assigneeId`
+// and `authorId` are bare uuids identifying rows in the core API's database,
+// which lives elsewhere — a join across that boundary is physically impossible,
+// which is the whole point of splitting the service out.
+//
+// Display names and the room are *snapshotted* at report time rather than looked
+// up. A room reallocation next term must not silently rewrite which room a
+// completed repair was carried out in.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// Trades, not topics. Each one is a different person with different tools,
+/// which is what makes a per-trade queue meaningful.
+enum MaintenanceCategory {
+  PLUMBING
+  ELECTRICAL
+  CARPENTRY
+  HOUSEKEEPING
+  INTERNET
+  APPLIANCE
+  PEST_CONTROL
+  OTHER
+}
+
+enum MaintenancePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+/// OPEN → ACCEPTED → RESOLVED → CLOSED is the happy path.
+/// A student may WITHDRAW while it is still OPEN, or reopen a RESOLVED request
+/// back to ACCEPTED if the fault is still there.
+enum MaintenanceStatus {
+  OPEN
+  ACCEPTED
+  RESOLVED
+  CLOSED
+  WITHDRAWN
+}
+
+enum MaintenanceEventType {
+  REPORTED
+  ACCEPTED
+  RESOLVED
+  REOPENED
+  CLOSED
+  WITHDRAWN
+  REASSIGNED
+  COMMENTED
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model MaintenanceRequest {
+  id        String @id @default(uuid()) @db.Uuid
+  reference String @unique
+
+  /// Who reported it, as a uuid in the core API's database.
+  studentId String @map("student_id") @db.Uuid
+
+  // Snapshot of the reporter at report time. A worker has to know whose room to
+  // go to and who to call on arrival, so — unlike a grievance system — there is
+  // deliberately no anonymous mode here. It would make the job impossible.
+  reporterName       String  @map("reporter_name")
+  reporterRollNumber String? @map("reporter_roll_number")
+  reporterPhone      String? @map("reporter_phone")
+
+  /// The room the work is in. Defaults to the reporter's own room but can be
+  /// changed — a broken tap in a common washroom is still worth reporting.
+  roomNo String @map("room_no")
+
+  /// Where in the room, in plain words: "attached washroom", "ceiling fan".
+  locationDetail String? @map("location_detail")
+
+  category    MaintenanceCategory
+  priority    MaintenancePriority @default(MEDIUM)
+  title       String
+  description String
+
+  status MaintenanceStatus @default(OPEN)
+
+  // Assignment
+  assigneeId   String?   @map("assignee_id") @db.Uuid
+  assigneeName String?   @map("assignee_name")
+  acceptedAt   DateTime? @map("accepted_at")
+
+  // Resolution
+  resolutionNote String?   @map("resolution_note")
+  resolvedAt     DateTime? @map("resolved_at")
+  closedAt       DateTime? @map("closed_at")
+  reopenCount    Int       @default(0) @map("reopen_count")
+
+  /// Drives the "you have an update" badge. `hasUnreadUpdate` is derived from
+  /// this against the last status change — never stored, so it needs no job to
+  /// keep it true.
+  lastStudentViewAt DateTime? @map("last_student_view_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  comments MaintenanceComment[]
+  events   MaintenanceEvent[]
+
+  @@index([studentId, status])
+  @@index([status, createdAt])
+  @@index([assigneeId, status])
+  @@index([category, status])
+  @@map("maintenance_requests")
+}
+
+model MaintenanceComment {
+  id        String @id @default(uuid()) @db.Uuid
+  requestId String @map("request_id") @db.Uuid
+
+  authorId   String @map("author_id") @db.Uuid
+  authorRole String @map("author_role")
+  authorName String @map("author_name")
+
+  body String
+
+  /// Handler-only note. Never returned to the student.
+  isInternal Boolean @default(false) @map("is_internal")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, createdAt])
+  @@map("maintenance_comments")
+}
+
+/// Append-only timeline. Also the natural home for a transactional outbox if
+/// the core API ever needs to react to maintenance activity.
+model MaintenanceEvent {
+  id        String               @id @default(uuid()) @db.Uuid
+  requestId String               @map("request_id") @db.Uuid
+  type      MaintenanceEventType
+  actorId   String?              @map("actor_id") @db.Uuid
+  actorName String               @map("actor_name")
+  note      String?
+  createdAt DateTime             @default(now()) @map("created_at")
+
+  request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, createdAt])
+  @@map("maintenance_events")
+}

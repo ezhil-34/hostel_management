@@ -144,4 +144,35 @@ export const outpassApi = {
   markReturn: (token) => api.post(`/outpasses/verify/${token}/return`),
 };
 
+/**
+ * Maintenance is served by a separate service, but nothing here knows that.
+ * The gateway (Vite in dev, nginx in production) routes `/api/maintenance` to
+ * it and everything else under `/api` to the core API — so these calls look
+ * exactly like the rest, and moving a module between services would not touch
+ * this file.
+ */
+const maintenanceQuery = ({ status = 'ALL', category = 'ALL' } = {}) =>
+  `?status=${status}&category=${category}`;
+
+export const maintenanceApi = {
+  list: (opts) => api.get(`/maintenance${maintenanceQuery(opts)}`),
+  create: (payload) => api.post('/maintenance', payload),
+  get: (id) => api.get(`/maintenance/${id}`),
+  withdraw: (id) => api.patch(`/maintenance/${id}/withdraw`),
+  reopen: (id, payload) => api.post(`/maintenance/${id}/reopen`, payload),
+  close: (id) => api.post(`/maintenance/${id}/close`),
+  comment: (id, payload) => api.post(`/maintenance/${id}/comments`, payload),
+
+  // Maintenance worker.
+  queue: (opts) => api.get(`/maintenance/queue${maintenanceQuery(opts)}`),
+  accept: (id) => api.post(`/maintenance/${id}/accept`),
+  resolve: (id, payload) => api.post(`/maintenance/${id}/resolve`, payload),
+
+  // Warden / admin.
+  listAll: (opts) => api.get(`/maintenance/admin${maintenanceQuery(opts)}`),
+  reassign: (id, payload) => api.post(`/maintenance/${id}/reassign`, payload),
+
+  health: () => api.get('/maintenance/health', { auth: false }),
+};
+
 export default api;

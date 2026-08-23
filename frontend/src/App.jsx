@@ -16,6 +16,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 
 const protectedRoutes = [
   { path: '/outpass', element: <OutpassPage /> },
+  // Served by the maintenance service; the gateway routes /api/maintenance there.
   { path: '/maintenance', element: <MaintenancePage /> },
   { path: '/points', element: <PointsPage /> },
   { path: '/profile', element: <ProfilePage /> },

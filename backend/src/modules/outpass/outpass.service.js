@@ -57,6 +57,28 @@ const outpassSelect = {
 
 const newReference = () => `OUT-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
+/**
+ * Applies a state change only if the row is still in the status we checked.
+ *
+ * Every transition here is a read-then-write: we fetch the pass, decide it is
+ * (say) APPROVED, then update. Two requests can interleave between those two
+ * steps — two guards scanning the same QR, a warden double-clicking Approve —
+ * and both would write. Putting the expected status in the WHERE clause makes
+ * the decision and the write one atomic statement, so exactly one wins.
+ *
+ * Returns the updated row, or null if someone else got there first.
+ */
+const transition = async (id, fromStatus, data) => {
+  const { count } = await prisma.outpass.updateMany({
+    where: { id, status: fromStatus },
+    data,
+  });
+
+  if (count === 0) return null;
+
+  return prisma.outpass.findUnique({ where: { id }, select: outpassSelect });
+};
+
 const newVerifyToken = () => crypto.randomBytes(32).toString('base64url');
 
 /**
@@ -95,31 +117,44 @@ const serializeMany = (rows, opts) => rows.map((row) => serializeOutpass(row, op
 // Student
 // ---------------------------------------------------------------------------
 
+/** Arbitrary namespace so these advisory locks cannot collide with any other. */
+const OUTPASS_LOCK_NAMESPACE = 4711;
+
 export const createOutpass = async (userId, input) => {
-  const open = await prisma.outpass.findFirst({
-    where: openPassFilter(userId),
-    select: { reference: true, status: true },
-  });
+  const created = await prisma.$transaction(async (tx) => {
+    // "Do you have an open pass?" then "here is a new one" is a read followed
+    // by a write, and two requests can slip between the two — leaving a student
+    // with two live passes and two working QR codes. A compare-and-swap cannot
+    // help here because there is no row yet to swap on, so take a per-student
+    // advisory lock instead: it is held until this transaction ends and blocks
+    // only that one student's concurrent creates.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${OUTPASS_LOCK_NAMESPACE}, hashtext(${userId}))`;
 
-  if (open) {
-    throw ApiError.conflict(
-      open.status === 'ACTIVE'
-        ? `You are currently out on pass ${open.reference}. Check back in before requesting another.`
-        : `You already have an open request (${open.reference}). Cancel it before raising a new one.`,
-    );
-  }
+    const open = await tx.outpass.findFirst({
+      where: openPassFilter(userId),
+      select: { reference: true, status: true },
+    });
 
-  const created = await prisma.outpass.create({
-    data: {
-      reference: newReference(),
-      userId,
-      roomNo: input.roomNo,
-      destination: input.destination,
-      reason: input.reason,
-      leaveAt: input.leaveAt,
-      returnAt: input.returnAt,
-    },
-    select: outpassSelect,
+    if (open) {
+      throw ApiError.conflict(
+        open.status === 'ACTIVE'
+          ? `You are currently out on pass ${open.reference}. Check back in before requesting another.`
+          : `You already have an open request (${open.reference}). Cancel it before raising a new one.`,
+      );
+    }
+
+    return tx.outpass.create({
+      data: {
+        reference: newReference(),
+        userId,
+        roomNo: input.roomNo,
+        destination: input.destination,
+        reason: input.reason,
+        leaveAt: input.leaveAt,
+        returnAt: input.returnAt,
+      },
+      select: outpassSelect,
+    });
   });
 
   return serializeOutpass(created, { includeQr: true });
@@ -161,12 +196,16 @@ export const cancelOutpass = async (userId, id) => {
     throw ApiError.badRequest(`This pass was already ${outpass.status.toLowerCase()}`);
   }
 
-  const updated = await prisma.outpass.update({
-    where: { id },
-    // Retire the token so a screenshot of an approved QR stops working.
-    data: { status: 'CANCELLED', verifyToken: null, reviewedAt: new Date() },
-    select: outpassSelect,
+  // Retire the token so a screenshot of an approved QR stops working.
+  const updated = await transition(id, outpass.status, {
+    status: 'CANCELLED',
+    verifyToken: null,
+    reviewedAt: new Date(),
   });
+
+  if (!updated) {
+    throw ApiError.conflict('This pass changed while you were cancelling it — reload and retry');
+  }
 
   return serializeOutpass(updated);
 };
@@ -202,18 +241,20 @@ export const reviewOutpass = async (reviewerId, id, { decision, note }) => {
     throw ApiError.forbidden('You cannot review your own outpass');
   }
 
-  const updated = await prisma.outpass.update({
-    where: { id },
-    data: {
-      status: decision,
-      reviewerId,
-      reviewNote: note ?? null,
-      reviewedAt: new Date(),
-      // The gate token exists only for an approved pass.
-      verifyToken: decision === 'APPROVED' ? newVerifyToken() : null,
-    },
-    select: outpassSelect,
+  // Only from PENDING — two wardens hitting Approve at once must not both
+  // review it, and an approve must not overwrite a decision already made.
+  const updated = await transition(id, 'PENDING', {
+    status: decision,
+    reviewerId,
+    reviewNote: note ?? null,
+    reviewedAt: new Date(),
+    // The gate token exists only for an approved pass.
+    verifyToken: decision === 'APPROVED' ? newVerifyToken() : null,
   });
+
+  if (!updated) {
+    throw ApiError.conflict('Another reviewer just decided this pass — reload the queue');
+  }
 
   // The QR belongs to the student, not the reviewer — they see it on their own
   // page once this returns.
@@ -322,11 +363,18 @@ export const markExit = async (guardId, token) => {
     );
   }
 
-  const updated = await prisma.outpass.update({
-    where: { id: outpass.id },
-    data: { status: 'ACTIVE', exitedAt: new Date(), exitLoggedBy: guardId },
-    select: outpassSelect,
+  // Two guards scanning the same QR at the same moment must log one exit.
+  const updated = await transition(outpass.id, 'APPROVED', {
+    status: 'ACTIVE',
+    exitedAt: new Date(),
+    exitLoggedBy: guardId,
   });
+
+  if (!updated) {
+    throw ApiError.conflict(
+      `${outpass.user.name} was just checked out at another gate — refresh to see the current state`,
+    );
+  }
 
   return { outpass: serializeOutpass(updated), nextAction: 'RETURN' };
 };
@@ -347,17 +395,19 @@ export const markReturn = async (guardId, token) => {
     );
   }
 
-  const updated = await prisma.outpass.update({
-    where: { id: outpass.id },
-    data: {
-      status: 'COMPLETED',
-      returnedAt: new Date(),
-      returnLoggedBy: guardId,
-      // A closed pass must not be re-scannable.
-      verifyToken: null,
-    },
-    select: outpassSelect,
+  const updated = await transition(outpass.id, 'ACTIVE', {
+    status: 'COMPLETED',
+    returnedAt: new Date(),
+    returnLoggedBy: guardId,
+    // A closed pass must not be re-scannable.
+    verifyToken: null,
   });
+
+  if (!updated) {
+    throw ApiError.conflict(
+      `${outpass.user.name} was just checked in at another gate — refresh to see the current state`,
+    );
+  }
 
   // Serialize before the status flips so lateness is still reported.
   const wasLate = new Date() > new Date(outpass.returnAt);
