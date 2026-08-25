@@ -11,6 +11,52 @@ const prisma = new PrismaClient();
 
 const DEMO_PASSWORD = process.env.SEED_PASSWORD ?? 'Password123';
 
+/** Receipt code for a seeded ledger row. */
+const receiptRef = () => `PTS-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+/**
+ * The counters students scan, and what each one sells.
+ *
+ * `qrToken` is fixed here so the demo QR codes stay valid across reseeds. In a
+ * real deployment these would be generated per counter and printed once.
+ */
+const counters = [
+  {
+    name: 'Main Canteen',
+    type: 'CANTEEN',
+    qrToken: 'counter-main-canteen-demo-token',
+    items: [
+      { name: 'Masala Chai', points: 15 },
+      { name: 'Samosa (2 pcs)', points: 25 },
+      { name: 'Veg Sandwich', points: 45 },
+      { name: 'Lunch Meal Combo', points: 80 },
+      { name: 'Chicken Biryani', points: 120 },
+    ],
+  },
+  {
+    name: 'Night Canteen',
+    type: 'CANTEEN',
+    qrToken: 'counter-night-canteen-demo-token',
+    items: [
+      { name: 'Filter Coffee', points: 20 },
+      { name: 'Maggi', points: 35 },
+      { name: 'Evening Coffee & Snacks', points: 40 },
+      { name: 'Cold Coffee', points: 55 },
+    ],
+  },
+  {
+    name: 'Laundry Counter',
+    type: 'LAUNDRY',
+    qrToken: 'counter-laundry-demo-token',
+    items: [
+      { name: 'Shirt & Trousers Ironing', points: 45 },
+      { name: '3kg Wash & Fold', points: 70 },
+      { name: '5kg Wash & Fold', points: 100 },
+      { name: 'Bedsheet & Blanket Wash', points: 150 },
+    ],
+  },
+];
+
 const students = [
   {
     name: 'John Doe',
@@ -105,26 +151,44 @@ async function main() {
       include: { wallets: true },
     });
 
-    const canteen = user.wallets.find((w) => w.type === 'CANTEEN');
-    const laundry = user.wallets.find((w) => w.type === 'LAUNDRY');
+    // Backfill a little history so the statement is not empty on a fresh
+    // install. Each row carries the balance it left behind, so the ledger adds
+    // up to the wallet's current balance rather than merely looking plausible.
+    const seedLedger = async (wallet, opening, rows) => {
+      if (!wallet) return;
+      if ((await prisma.pointTransaction.count({ where: { walletId: wallet.id } })) > 0) return;
 
-    if (canteen && (await prisma.pointTransaction.count({ where: { walletId: canteen.id } })) === 0) {
-      await prisma.pointTransaction.createMany({
-        data: [
-          { walletId: canteen.id, title: 'Evening Coffee & Snacks', points: 40, type: 'DEBIT' },
-          { walletId: canteen.id, title: 'Lunch Meal Combo', points: 80, type: 'DEBIT' },
-        ],
-      });
-    }
+      let running = opening;
+      for (const row of rows) {
+        running += row.type === 'CREDIT' ? row.points : -row.points;
+        await prisma.pointTransaction.create({
+          data: { ...row, walletId: wallet.id, reference: receiptRef(), balanceAfter: running },
+        });
+      }
 
-    if (laundry && (await prisma.pointTransaction.count({ where: { walletId: laundry.id } })) === 0) {
-      await prisma.pointTransaction.createMany({
-        data: [
-          { walletId: laundry.id, title: '5kg Wash & Fold', points: 100, type: 'DEBIT' },
-          { walletId: laundry.id, title: 'Shirt & Trousers Ironing', points: 45, type: 'DEBIT' },
-        ],
-      });
-    }
+      // The wallet ends up wherever the ledger says it ends up.
+      await prisma.wallet.update({ where: { id: wallet.id }, data: { balance: running } });
+    };
+
+    await seedLedger(
+      user.wallets.find((w) => w.type === 'CANTEEN'),
+      0,
+      [
+        { title: 'Opening credit — paid at the hostel office', points: 570, type: 'CREDIT', actorName: 'Meera Nair', note: 'Cash paid at the hostel office' },
+        { title: 'Lunch Meal Combo', points: 80, type: 'DEBIT', counterName: 'Main Canteen' },
+        { title: 'Evening Coffee & Snacks', points: 40, type: 'DEBIT', counterName: 'Night Canteen' },
+      ],
+    );
+
+    await seedLedger(
+      user.wallets.find((w) => w.type === 'LAUNDRY'),
+      0,
+      [
+        { title: 'Opening credit — paid at the hostel office', points: 945, type: 'CREDIT', actorName: 'Meera Nair', note: 'Cash paid at the hostel office' },
+        { title: '5kg Wash & Fold', points: 100, type: 'DEBIT', counterName: 'Laundry Counter' },
+        { title: 'Shirt & Trousers Ironing', points: 45, type: 'DEBIT', counterName: 'Laundry Counter' },
+      ],
+    );
 
     // John is left with no outpass on purpose, so he can walk the full flow
     // straight away: request → warden approves → gate scans him out and in.
@@ -173,6 +237,30 @@ async function main() {
     });
   }
 
+  // Counters and their menus. Upserted by qrToken so reseeding refreshes the
+  // menu without invalidating printed QR codes.
+  for (const { items, ...counter } of counters) {
+    const row = await prisma.counter.upsert({
+      where: { qrToken: counter.qrToken },
+      update: { name: counter.name, type: counter.type, isActive: true },
+      create: counter,
+    });
+
+    for (const item of items) {
+      const existing = await prisma.menuItem.findFirst({
+        where: { counterId: row.id, name: item.name },
+      });
+      if (existing) {
+        await prisma.menuItem.update({
+          where: { id: existing.id },
+          data: { points: item.points, isAvailable: true },
+        });
+      } else {
+        await prisma.menuItem.create({ data: { ...item, counterId: row.id } });
+      }
+    }
+  }
+
   console.log('Seed complete.');
   console.log(`  admin@hostel.edu    / ${DEMO_PASSWORD}   (admin)`);
   console.log(`  warden@hostel.edu   / ${DEMO_PASSWORD}   (warden — 1 profile request, 1 overdue pass)`);
@@ -181,6 +269,9 @@ async function main() {
   console.log(`  worker2@hostel.edu  / ${DEMO_PASSWORD}   (second worker, for the race)`);
   console.log(`  john@student.edu    / ${DEMO_PASSWORD}   (roll 21CS104 — no pass yet, request one)`);
   console.log(`  priya@student.edu   / ${DEMO_PASSWORD}   (roll 21EC211 — currently out, overdue)`);
+  console.log('');
+  console.log(`  ${counters.length} counters seeded with menus. Students set a spending PIN`);
+  console.log('  on their first purchase; wardens top wallets up from the Points page.');
 }
 
 main()

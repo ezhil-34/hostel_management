@@ -612,6 +612,94 @@ docker compose stop maintenance-service # outpass and profile keep working
 ---
 
 
+## Points
+
+Canteen and laundry wallets. This lives in the **core API**, not its own
+service: a wallet belongs to a user and the two are joined on every read, which
+is the test for whether something can stand alone.
+
+```
+warden credits ──▶ WALLET ──student scans a counter──▶ menu ──PIN──▶ DEBIT + receipt
+                     │
+                     └─ every movement writes a ledger row carrying the balance it left behind
+```
+
+### How points get in
+
+Only a **warden or admin** can credit a wallet, with a note saying what it is
+for. There is no self-service top-up, because there is no payment gateway behind
+one — money is paid at the hostel office and the credit records who added it.
+The note and the staff member's name appear on the student's statement.
+
+### How points go out
+
+A student scans a counter's QR code, picks from **that counter's menu**, and
+confirms with a four-digit PIN. Prices come from the server: the spend request
+carries a counter token and an item id, never an amount, so the browser cannot
+say what a samosa costs. An item id from a different counter's menu is refused.
+
+### The PIN
+
+bcrypt-hashed at the same cost as an account password, verified server-side,
+and never returned in any response — the wallet payload carries `hasPin`, not
+the hash. Setting or changing it requires the **account password**, so a
+borrowed unlocked phone cannot set a fresh PIN and drain the balance. Five wrong
+attempts lock the wallet for fifteen minutes, and a per-device rate limit sits
+in front of that so an attacker cannot spray one guess each across many
+accounts without tripping any single wallet's counter.
+
+### Not overdrawing, and not double-charging
+
+The balance is never read, decided on, and then written. The check lives inside
+the write:
+
+```sql
+UPDATE wallets SET balance = balance - :cost
+ WHERE id = :id AND balance >= :cost
+```
+
+Zero rows updated means the points were gone, whoever got there first. The
+ledger row is written in the same transaction, so a balance cannot move without
+a receipt explaining it. Verified against a real PostgreSQL: ten simultaneous
+30-point spends against a 100-point balance leave exactly three receipts and 10
+points. The same test against a read-then-write version ends at **−200**.
+
+### Two things that bit us here
+
+**A wrong PIN returns 403, not 401.** The browser's API client answers a 401 by
+refreshing the token and replaying the request — correct for a stale session,
+and wrong for a refused action. Returning 401 for a wrong PIN meant one tap on
+Pay was posted twice, so the wallet locked after three attempts instead of five.
+The client now replays only a 401 tagged `TOKEN_INVALID` / `TOKEN_MISSING`, so a
+future endpoint making the same mistake cannot silently double-post a payment.
+
+**The PIN boxes update through a function of the previous value.** Reading the
+`value` prop looked fine and dropped a digit whenever two arrived before React
+re-rendered — a wrong PIN, for no visible reason, costing a lockout attempt.
+
+### Endpoints — all under `/api/points`
+
+| Method | Path | Who | Purpose |
+| --- | --- | --- | --- |
+| GET | `/wallets` | any | Both wallets, balances and recent statement |
+| GET | `/transactions` | any | Full statement (`?type=`, `?limit=`) |
+| GET | `/counters` | any | Open counters — backs the picker standing in for a camera |
+| GET | `/counters/:token` | any | Resolve a scanned QR to a counter and its menu |
+| POST | `/pin` | any | Set or change the PIN, confirmed with the account password |
+| POST | `/spend` | any | Buy one menu item |
+| GET | `/students` | Warden/Admin | Find a student and see both balances |
+| POST | `/credit` | Warden/Admin | Add points, with a reason |
+
+### Counters and menus
+
+Seeded with three counters — Main Canteen, Night Canteen and Laundry Counter —
+each with a menu. `qrToken` is what a printed QR code contains, so a counter can
+be issued a new code without touching its menu or its history. Reseeding
+upserts by token, which refreshes menus without invalidating printed codes.
+
+---
+
+
 ## Data model
 
 `User` — students, wardens, admins and staff. Unique on both `email` and
@@ -624,8 +712,13 @@ their note, the `verifyToken` behind the QR, and the gate log (`exitedAt`,
 `returnedAt`, and which guard recorded each). See [Outpasses](#outpasses) above.
 
 `Wallet` + `PointTransaction` — one `CANTEEN` and one `LAUNDRY` wallet per
-student, each with a balance, an optional spending PIN, and a transaction
-ledger. Wallets are created automatically at signup.
+student, each with a balance, a bcrypt-hashed spending PIN and its lockout
+state, plus an append-only ledger. Every ledger row carries the `balanceAfter`
+it left behind, so the statement always explains the balance. Wallets are
+created at signup, and any that are missing are created on first read.
+
+`Counter` + `MenuItem` — the canteen and laundry counters students scan, and
+what each one sells. Prices live here and are read server-side at spend time.
 
 `ProfileChangeRequest` — the approval ticket: which field, old and new value,
 the requester's reason, status, and who reviewed it with what note.
@@ -709,6 +802,22 @@ itself. Recreate it:
 ```bash
 docker compose up -d frontend
 ```
+
+**A button does nothing, or an action returns 500 with a CORS message**
+Chrome attaches an `Origin` header to every non-GET request, even a same-origin
+one. Requests reach a service through the gateway, so they *are* same-origin —
+but a POST still arrives carrying `Origin: http://127.0.0.1:5173`, and if
+`CORS_ORIGINS` happens to spell that host `localhost` it used to be refused.
+The symptom was distinctive: every page loaded and every list rendered (GETs
+carry no Origin), and then every button failed.
+
+Both services now compare the origin against the request's own host and let a
+genuinely same-origin request through however it is spelled, and in development
+also allow loopback and private LAN addresses so testing from a phone works. A
+refused origin no longer throws — it simply gets no `Access-Control-Allow-Origin`
+header, which is what CORS is supposed to do, and the reason is logged
+server-side naming the origin to add to `CORS_ORIGINS`. See
+`src/config/cors.js` in either service.
 
 **`restart` is not `up -d`**
 `docker compose restart` re-runs the process inside the *existing* container. It

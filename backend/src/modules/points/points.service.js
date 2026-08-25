@@ -272,10 +272,7 @@ export const payQrCode = async (userId, token, pin) => {
   return { wallet, transaction, qr: serializeQr(paidQr) };
 };
 
-// ---------------------------------------------------------------------------
 // Admin: top up a student's wallet directly (recharge, not a purchase)
-// ---------------------------------------------------------------------------
-
 const studentSelect = {
   id: true,
   name: true,

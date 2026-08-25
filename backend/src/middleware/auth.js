@@ -9,15 +9,19 @@ export const requireAuth = async (req, _res, next) => {
     const [scheme, token] = header.split(' ');
 
     if (scheme !== 'Bearer' || !token) {
-      throw ApiError.unauthorized('Missing or malformed Authorization header');
+      throw ApiError.unauthorized('Missing or malformed Authorization header', 'TOKEN_MISSING');
     }
 
     let payload;
     try {
       payload = verifyAccessToken(token);
     } catch (err) {
+      // Both are worth one silent refresh-and-retry: an expired token
+      // obviously, and an invalid one because rotating the signing secret
+      // leaves valid sessions holding tokens this process cannot verify.
       throw ApiError.unauthorized(
         err.name === 'TokenExpiredError' ? 'Access token expired' : 'Invalid access token',
+        'TOKEN_INVALID',
       );
     }
 
