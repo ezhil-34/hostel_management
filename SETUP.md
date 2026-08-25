@@ -72,8 +72,13 @@ docker compose exec backend npx prisma migrate dev --name init
 docker compose exec backend npm run db:seed
 ```
 
-Creates `User`, `RefreshToken`, `ProfileChangeRequest`, `Outpass`, `Wallet` and
-`PointTransaction`, then loads the demo accounts.
+Creates `User`, `RefreshToken`, `ProfileChangeRequest`, `Outpass`, `Wallet`,
+`PointTransaction`, `Counter` and `MenuItem`, then loads the demo accounts, the
+wallet ledgers and three counters with their menus.
+
+Students start with no spending PIN — the Points page asks for one on the first
+purchase, and setting it needs the account password (`Password123` for the demo
+accounts).
 
 ---
 
@@ -119,11 +124,11 @@ Password for every demo account: `Password123`
 
 | Account | Role | What to try |
 | --- | --- | --- |
-| `john@student.edu` | student, room B-302 | Report a fault, request an outpass |
+| `john@student.edu` | student, room B-302 | Report a fault, request an outpass, spend points |
 | `priya@student.edu` | student | Currently out and an hour overdue |
 | `worker@hostel.edu` | maintenance worker | Work queue — three jobs waiting |
 | `worker2@hostel.edu` | maintenance worker | The second worker, for the accept race |
-| `warden@hostel.edu` | warden | Approvals, oversight, reassign |
+| `warden@hostel.edu` | warden | Approvals, oversight, reassign, top up wallets |
 | `security@hostel.edu` | gate guard | Scan outpass QR codes |
 | `admin@hostel.edu` | administrator | Everything |
 

@@ -28,8 +28,13 @@ router.use('/auth', authRoutes);
 router.use('/profile', profileRoutes);
 router.use('/outpasses', outpassRoutes);
 
+<<<<<<< Updated upstream
 // Feature routers land here as they are built:
 // router.use('/maintenance', maintenanceRoutes);
 // router.use('/points', pointsRoutes);
+=======
+// Maintenance is not here: it moved out to its own service, reached through the
+// gateway at /api/maintenance. See maintenance-service/.
+>>>>>>> Stashed changes
 
 export default router;

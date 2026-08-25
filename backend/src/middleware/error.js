@@ -73,6 +73,7 @@ export const errorHandler = (err, _req, res, _next) => {
     success: false,
     error: {
       message,
+      ...(err.code && typeof err.code === 'string' ? { code: err.code } : {}),
       ...(details ? { details } : {}),
       ...(env.isProd ? {} : { stack: err.stack }),
     },
