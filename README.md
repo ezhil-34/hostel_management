@@ -1,8 +1,15 @@
 # SmartHostel — Hostel Management System
 
-Full-stack hostel management app: outpass requests with QR verification, a
-maintenance service where students log repair jobs and hostel trade workers pick
-them up, and a canteen/laundry points wallet.
+Full-stack hostel management app in five modules: **accounts** with rotating
+sessions, **profiles** with a field-level approval policy, **outpasses** with QR
+verification at the gate, a **maintenance service** where students log repair
+jobs and trade workers pick them up, and **points** wallets for the canteen and
+laundry.
+
+Two backend services, two databases, one address bar. New here? Read
+[Services](#services) for the shape of it, then
+[Quick start](#quick-start-docker--recommended) — or [`SETUP.md`](SETUP.md) for
+the full runbook.
 
 | Layer    | Stack                                                         |
 | -------- | ------------------------------------------------------------- |
@@ -10,6 +17,7 @@ them up, and a canteen/laundry points wallet.
 | Services | Node.js 22 · Express 5 (ESM) · JWT auth · zod validation       |
 | Database | PostgreSQL 16 · Prisma ORM 6 — one database per service        |
 | Runtime  | Docker Compose (dev + production stacks)                       |
+| Testing  | Lifecycle, permission, concurrency and cross-service contract suites |
 
 ## Services
 
@@ -46,55 +54,78 @@ You need Docker Desktop. Nothing else.
 # 1. Create your environment file
 cp .env.example .env          # Windows PowerShell:  copy .env.example .env
 
-# 2. Build and start postgres + backend + frontend
+# 2. Build and start postgres + backend + maintenance-service + frontend
 docker compose up -d --build
 
-# 3. Create the database tables
-docker compose exec backend npx prisma migrate dev --name init
+# 3. The maintenance service owns its own database, which does not
+#    create itself on an existing Postgres volume. See Maintenance below.
+docker compose exec postgres psql -U hostel -d hostel_db \
+  -c "CREATE DATABASE maintenance_db;"
 
-# 4. (optional) Load demo accounts and sample data
+# 4. Create the tables and load the demo data — once per service
+docker compose exec backend npx prisma migrate dev
 docker compose exec backend npm run db:seed
+
+docker compose exec maintenance-service npx prisma migrate dev
+docker compose exec maintenance-service npm run db:seed
 ```
 
-| Service         | URL                                                          |
-| --------------- | ------------------------------------------------------------ |
-| Frontend        | http://localhost:5173                                        |
-| API health      | http://localhost:5000/api/health                             |
-| Database health | http://localhost:5000/api/health/db                           |
-| Adminer (DB UI) | http://localhost:8080 — start with `docker compose --profile tools up -d` |
+**[`SETUP.md`](SETUP.md) is the full runbook** — the same steps with every
+gotcha spelled out, plus how to start over. This section is the short version.
+
+| Service             | URL                                                      |
+| ------------------- | -------------------------------------------------------- |
+| Frontend            | http://localhost:5173                                    |
+| Core API health     | http://localhost:5000/api/health                         |
+| Core API database   | http://localhost:5000/api/health/db                      |
+| Maintenance health  | http://localhost:5100/api/maintenance/health             |
+| Adminer (DB UI)     | http://localhost:8080 — `docker compose --profile tools up -d` |
 
 If you are adding the maintenance service to an **existing** install, its
 database will not create itself — see [Maintenance](#maintenance).
 
 Demo logins after seeding (password `Password123`):
 
-- `john@student.edu` — roll `21CS104`; no outpass yet, so he can walk the whole flow
-- `priya@student.edu` — roll `21EC211`; currently out and an hour overdue
-- `warden@hostel.edu` — warden; one profile request and one overdue pass waiting
-- `security@hostel.edu` — gate guard; scans outpass QR codes
-- `worker@hostel.edu` / `worker2@hostel.edu` — maintenance workers; see the job queue
-- `admin@hostel.edu` — administrator
+| Account | Try |
+| --- | --- |
+| `john@student.edu` | Roll `21CS104`, room B-302. No outpass yet, so he can walk the whole flow; report a fault; set a spending PIN and buy something |
+| `priya@student.edu` | Roll `21EC211`. Currently out and an hour overdue |
+| `warden@hostel.edu` | One profile request and one overdue pass waiting; oversees maintenance; tops up wallets |
+| `security@hostel.edu` | Gate guard — scans outpass QR codes, and nothing else |
+| `worker@hostel.edu` · `worker2@hostel.edu` | Maintenance workers. Two of them, so you can watch the accept race |
+| `admin@hostel.edu` | Everything |
+
+Students start with **no spending PIN** — the Points page asks for one on the
+first purchase, and setting it needs the account password (the same
+`Password123`).
 
 Everyday commands:
 
 ```bash
-docker compose logs -f backend     # follow API logs
-docker compose restart backend     # restart after an env change
-docker compose down                # stop everything (data survives)
-docker compose down -v             # stop and wipe the database volume
+docker compose logs -f backend              # follow API logs
+docker compose logs -f maintenance-service  # follow maintenance logs
+docker compose up -d <service>              # apply a docker-compose.yml change
+docker compose restart <service>            # re-run the process only
+docker compose down                         # stop everything (data survives)
+docker compose down -v                      # stop and wipe BOTH databases
 ```
+
+`restart` and `up -d` are not interchangeable — see
+[Troubleshooting](#troubleshooting). Source changes need neither:
+all three services reload on save.
 
 ---
 
 ## Seeing your changes
 
-Both services reload on save — your project folder is bind-mounted into the
-containers, so there is nothing to copy or rebuild for ordinary code edits.
+All three services reload on save — your project folder is bind-mounted into
+the containers, so there is nothing to copy or rebuild for ordinary code edits.
 
 | You changed…                        | What happens                           | What you do                                        |
 | ----------------------------------- | -------------------------------------- | -------------------------------------------------- |
 | `frontend/src/**` (jsx, css)        | Vite hot-swaps the module              | Nothing — the browser updates in place              |
 | `backend/src/**` (js)               | nodemon restarts the API in ~1s        | Nothing — re-trigger the request                    |
+| `maintenance-service/src/**` (js)   | nodemon restarts that service only     | Nothing — the core API is untouched                 |
 | `backend/prisma/schema.prisma`      | Nothing until you migrate              | `docker compose exec backend npx prisma migrate dev --name your_change` then `docker compose restart backend` |
 | `package.json` (added a dependency) | Not installed in the container yet     | See **Adding a dependency** below — a rebuild alone is not enough |
 | `.env` or `docker-compose.yml`      | Not picked up by a running container   | `docker compose up -d` (recreates what changed)     |
@@ -165,25 +196,39 @@ development. Running on Linux, or outside Docker, you can use
 
 Requires Node.js 20+ and a PostgreSQL 16 server you can reach.
 
+Create both databases first — `hostel_db` and `maintenance_db`.
+
 ```bash
-# --- Backend ---
+# --- Core API ---
 cd backend
 cp .env.example .env               # then set DATABASE_URL to your postgres
 npm install
-npx prisma migrate dev --name init
+npx prisma migrate dev
 npm run db:seed                    # optional
 npm run dev                        # http://localhost:5000
 
-# --- Frontend (second terminal) ---
+# --- Maintenance service (second terminal) ---
+cd maintenance-service
+cp .env.example .env               # DATABASE_URL points at maintenance_db,
+npm install                        # and JWT_ACCESS_SECRET must MATCH the core API
+npx prisma migrate dev
+npm run db:seed
+npm run dev                        # http://localhost:5100
+
+# --- Frontend (third terminal) ---
 cd frontend
 cp .env.example .env
 npm install
 npm run dev                        # http://localhost:5173
 ```
 
-The Vite dev server proxies `/api` to `VITE_PROXY_TARGET` (default
-`http://localhost:5000`), so the browser only ever talks to one origin and
-there are no CORS surprises in development.
+The shared `JWT_ACCESS_SECRET` is the entire contract between the two services.
+If they differ, the maintenance service rejects every token the core API issues
+and the maintenance page returns 401s that look like a login problem.
+
+Vite is the gateway in development: it routes `/api/maintenance` to
+`VITE_MAINTENANCE_PROXY_TARGET` and everything else under `/api` to
+`VITE_PROXY_TARGET`, so the browser only ever talks to one origin.
 
 ---
 
@@ -207,34 +252,42 @@ with production-only dependencies.
 
 ```
 hostel_management/
-├── docker-compose.yml            # dev stack: postgres + backend + frontend (+ adminer)
+├── docker-compose.yml            # dev stack: postgres + backend + maintenance + frontend
 ├── docker-compose.prod.yml       # production stack: nginx-served frontend
 ├── .env.example                  # compose configuration
+├── SETUP.md                      # the full setup runbook
 │
-├── backend/
+├── backend/                      # the core API :5000 → hostel_db
 │   ├── Dockerfile                # multi-stage: development | production
 │   ├── prisma/
 │   │   ├── schema.prisma         # data model
-│   │   └── seed.js               # demo accounts and sample records
+│   │   ├── migrations/           # committed; some are hand-written, see below
+│   │   └── seed.js               # demo accounts, wallets, counters and menus
 │   └── src/
 │       ├── server.js             # http server + graceful shutdown
 │       ├── app.js                # express app: helmet, cors, rate limiting
-│       ├── config/               # env parsing, prisma client singleton
+│       ├── config/
+│       │   ├── env.js            # env parsing
+│       │   ├── prisma.js         # client singleton
+│       │   └── cors.js           # same-origin aware — see Troubleshooting
 │       ├── middleware/           # auth guard, zod validation, error handler
 │       ├── utils/                # jwt, password hashing, ApiError
 │       ├── routes/index.js       # /api router + health checks
 │       └── modules/
 │           ├── auth/             # routes → controller → service → schema
 │           ├── profile/          # + profile.policy.js (field permissions)
-│           └── outpass/          # request → approve → gate scan → return
+│           ├── outpass/          # request → approve → gate scan → return
+│           └── points/           # wallets, PIN, counters, spend, credit
 │
-├── maintenance-service/          # its own process, image, database, migrations
+├── maintenance-service/          # its own process, image, database :5100
 │   ├── Dockerfile
 │   ├── prisma/
 │   │   ├── schema.prisma         # maintenance_db — no FK reaches hostel_db
+│   │   ├── migrations/
 │   │   └── seed.js
 │   └── src/
 │       ├── clients/coreApi.js    # the ONE outbound call, at write time only
+│       ├── config/cors.js        # a copy, deliberately — see below
 │       ├── middleware/           # its own copy of the JWT guard — see below
 │       └── modules/maintenance/  # report → accept → resolve → close
 │
@@ -245,12 +298,20 @@ hostel_management/
     ├── nginx.conf                # SPA fallback + /api proxy
     ├── vite.config.js            # dev proxy, docker-friendly host binding
     └── src/
-        ├── lib/api.js            # fetch wrapper with auto token refresh
+        ├── lib/
+        │   ├── api.js            # fetch wrapper; refreshes only on a real token 401
+        │   ├── datetime.js
+        │   └── maintenanceMeta.js   # trade labels and their examples
         ├── context/
         │   ├── AuthContext.jsx
         │   ├── ToastContext.jsx     # useToast() — success/error/info/warning
         │   └── ConfirmContext.jsx   # useConfirm() — promise-based dialog
-        ├── components/           # ProtectedRoute, StatusBadge, OutpassCard, …
+        ├── components/
+        │   ├── ProtectedRoute.jsx   # waits for the session, then guards the route
+        │   ├── StatusBadge.jsx      # every status label lives here
+        │   ├── NotePromptModal.jsx  # asks for a written note (resolve, reopen)
+        │   ├── PinModal.jsx         # set a PIN, and confirm a purchase with it
+        │   ├── Outpass*, Maintenance*, ChangeRequest*  # cards and modals
         └── pages/                # Home, SignIn, SignUp, Profile, Outpass,
                                   # GateVerify, Maintenance, Points
 ```
@@ -285,6 +346,10 @@ toast.
 ## API
 
 Base URL `/api`. Every response is `{ success, data }` or `{ success, error }`.
+
+Auth, profile and outpass routes are listed below. The two larger modules have
+their endpoint tables in their own sections: [Maintenance](#maintenance) (served
+by the other service, under `/api/maintenance`) and [Points](#points).
 
 | Method | Endpoint                | Auth   | Purpose                                        |
 | ------ | ----------------------- | ------ | ---------------------------------------------- |
@@ -612,6 +677,94 @@ docker compose stop maintenance-service # outpass and profile keep working
 ---
 
 
+## Points
+
+Canteen and laundry wallets. This lives in the **core API**, not its own
+service: a wallet belongs to a user and the two are joined on every read, which
+is the test for whether something can stand alone.
+
+```
+warden credits ──▶ WALLET ──student scans a counter──▶ menu ──PIN──▶ DEBIT + receipt
+                     │
+                     └─ every movement writes a ledger row carrying the balance it left behind
+```
+
+### How points get in
+
+Only a **warden or admin** can credit a wallet, with a note saying what it is
+for. There is no self-service top-up, because there is no payment gateway behind
+one — money is paid at the hostel office and the credit records who added it.
+The note and the staff member's name appear on the student's statement.
+
+### How points go out
+
+A student scans a counter's QR code, picks from **that counter's menu**, and
+confirms with a four-digit PIN. Prices come from the server: the spend request
+carries a counter token and an item id, never an amount, so the browser cannot
+say what a samosa costs. An item id from a different counter's menu is refused.
+
+### The PIN
+
+bcrypt-hashed at the same cost as an account password, verified server-side,
+and never returned in any response — the wallet payload carries `hasPin`, not
+the hash. Setting or changing it requires the **account password**, so a
+borrowed unlocked phone cannot set a fresh PIN and drain the balance. Five wrong
+attempts lock the wallet for fifteen minutes, and a per-device rate limit sits
+in front of that so an attacker cannot spray one guess each across many
+accounts without tripping any single wallet's counter.
+
+### Not overdrawing, and not double-charging
+
+The balance is never read, decided on, and then written. The check lives inside
+the write:
+
+```sql
+UPDATE wallets SET balance = balance - :cost
+ WHERE id = :id AND balance >= :cost
+```
+
+Zero rows updated means the points were gone, whoever got there first. The
+ledger row is written in the same transaction, so a balance cannot move without
+a receipt explaining it. Verified against a real PostgreSQL: ten simultaneous
+30-point spends against a 100-point balance leave exactly three receipts and 10
+points. The same test against a read-then-write version ends at **−200**.
+
+### Two things that bit us here
+
+**A wrong PIN returns 403, not 401.** The browser's API client answers a 401 by
+refreshing the token and replaying the request — correct for a stale session,
+and wrong for a refused action. Returning 401 for a wrong PIN meant one tap on
+Pay was posted twice, so the wallet locked after three attempts instead of five.
+The client now replays only a 401 tagged `TOKEN_INVALID` / `TOKEN_MISSING`, so a
+future endpoint making the same mistake cannot silently double-post a payment.
+
+**The PIN boxes update through a function of the previous value.** Reading the
+`value` prop looked fine and dropped a digit whenever two arrived before React
+re-rendered — a wrong PIN, for no visible reason, costing a lockout attempt.
+
+### Endpoints — all under `/api/points`
+
+| Method | Path | Who | Purpose |
+| --- | --- | --- | --- |
+| GET | `/wallets` | any | Both wallets, balances and recent statement |
+| GET | `/transactions` | any | Full statement (`?type=`, `?limit=`) |
+| GET | `/counters` | any | Open counters — backs the picker standing in for a camera |
+| GET | `/counters/:token` | any | Resolve a scanned QR to a counter and its menu |
+| POST | `/pin` | any | Set or change the PIN, confirmed with the account password |
+| POST | `/spend` | any | Buy one menu item |
+| GET | `/students` | Warden/Admin | Find a student and see both balances |
+| POST | `/credit` | Warden/Admin | Add points, with a reason |
+
+### Counters and menus
+
+Seeded with three counters — Main Canteen, Night Canteen and Laundry Counter —
+each with a menu. `qrToken` is what a printed QR code contains, so a counter can
+be issued a new code without touching its menu or its history. Reseeding
+upserts by token, which refreshes menus without invalidating printed codes.
+
+---
+
+
 ## Data model
 
 `User` — students, wardens, admins and staff. Unique on both `email` and
@@ -624,8 +777,13 @@ their note, the `verifyToken` behind the QR, and the gate log (`exitedAt`,
 `returnedAt`, and which guard recorded each). See [Outpasses](#outpasses) above.
 
 `Wallet` + `PointTransaction` — one `CANTEEN` and one `LAUNDRY` wallet per
-student, each with a balance, an optional spending PIN, and a transaction
-ledger. Wallets are created automatically at signup.
+student, each with a balance, a bcrypt-hashed spending PIN and its lockout
+state, plus an append-only ledger. Every ledger row carries the `balanceAfter`
+it left behind, so the statement always explains the balance. Wallets are
+created at signup, and any that are missing are created on first read.
+
+`Counter` + `MenuItem` — the canteen and laundry counters students scan, and
+what each one sells. Prices live here and are read server-side at spend time.
 
 `ProfileChangeRequest` — the approval ticket: which field, old and new value,
 the requester's reason, status, and who reviewed it with what note.
@@ -640,6 +798,65 @@ After editing a schema, migrate the service that owns it:
 docker compose exec backend npx prisma migrate dev --name describe_your_change
 docker compose exec maintenance-service npx prisma migrate dev --name describe_your_change
 ```
+
+If the change adds a **required** column to a table that already has rows,
+`migrate dev` will refuse rather than invent values. Write that migration by
+hand — see [Conventions](#conventions).
+
+---
+
+## Conventions
+
+Every one of these exists because breaking it cost a real bug.
+
+**Shapes.** Every response is `{ success, data }` or
+`{ success, error: { message, code?, details? } }`. Validation failures are 400
+with `details: [{ field, message }]`.
+
+**Never return a raw database row.** Everything leaves a service through a
+serializer that decides what is public. This is what keeps internal ids out of
+payloads — maintenance timeline entries were once returned untouched, and every
+one carried the id of the person who caused the event.
+
+**401 means the session is invalid. Nothing else.** The browser answers a 401 by
+refreshing the token and replaying the request, so using it for a refused
+*action* causes a silent double-post. A wrong spending PIN returned 401 once,
+and one tap on Pay became two failed attempts. A refused action is **403**. The
+client also only replays a 401 carrying `code: "TOKEN_INVALID"` or
+`"TOKEN_MISSING"`, so a future endpoint making the same mistake cannot
+double-post a payment.
+
+**A new status needs a badge entry.** `StatusBadge.jsx` maps every status to a
+label. `CLOSED` was missing once, and the fallback quietly borrowed `PENDING`'s
+label — so a closed maintenance job displayed "Pending review". An unrecognised
+status now renders its own name and logs a warning in development, so the next
+omission announces itself instead of impersonating another state.
+
+**A user's own action is not an unread update.** `hasUnreadUpdate` means
+"something happened while you were not looking". Owner actions — close, withdraw,
+reopen — record the view time in the same write, or the student's own click
+lights up their own badge.
+
+**Derive, don't store, anything time-dependent.** `isOverdue`, `isExpired` and
+`hasUnreadUpdate` are computed on read. A stored flag needs a scheduler and is
+wrong between runs.
+
+**zod v4 gotchas.** `.trim()` runs *after* validation, so normalise with
+`z.preprocess` first. And `z.object` **strips unknown keys** — anything the
+handler reads off `req.body` must be declared in the schema. That one bit
+`changePassword`'s `refreshToken`, which meant non-browser clients revoked their
+own session.
+
+**Match Prisma errors by `err.name`, never `instanceof`.** The error classes are
+`undefined` until `prisma generate` has run, and `x instanceof undefined`
+throws — inside the error handler, turning a tidy 500 into a crash in exactly
+the situation where you most need a readable message.
+
+**Hand-write a migration when a new column is required.** `migrate dev` refuses
+to add a `NOT NULL` column to a table with rows, and it is right to. Add it
+nullable, backfill it, then enforce it — see
+`backend/prisma/migrations/*_points_module/migration.sql`, which reconstructs a
+running balance for ledger rows that predate the column.
 
 ---
 
@@ -660,9 +877,13 @@ or `maintenance/` (maintenance service) and rename:
 it goes in the core API. If it can live off a bare `studentId` plus a snapshot,
 it can be its own service — copy `maintenance-service/` as the template.
 
-On the frontend, add the calls to `src/lib/api.js`. A new service also needs a
-proxy entry in `vite.config.js` and a `location` in `nginx.conf`, both placed
-**before** the general `/api` rule.
+On the frontend, add the calls to `src/lib/api.js`, and if the feature
+introduces a status, add it to `StatusBadge.jsx` at the same time. A new
+*service* also needs a proxy entry in `vite.config.js` and a `location` in
+`nginx.conf`, both placed **before** the general `/api` rule.
+
+Read [Conventions](#conventions) before the first commit — it is short, and
+every line in it is a bug somebody already shipped.
 
 ---
 
@@ -710,6 +931,22 @@ itself. Recreate it:
 docker compose up -d frontend
 ```
 
+**A button does nothing, or an action returns 500 with a CORS message**
+Chrome attaches an `Origin` header to every non-GET request, even a same-origin
+one. Requests reach a service through the gateway, so they *are* same-origin —
+but a POST still arrives carrying `Origin: http://127.0.0.1:5173`, and if
+`CORS_ORIGINS` happens to spell that host `localhost` it used to be refused.
+The symptom was distinctive: every page loaded and every list rendered (GETs
+carry no Origin), and then every button failed.
+
+Both services now compare the origin against the request's own host and let a
+genuinely same-origin request through however it is spelled, and in development
+also allow loopback and private LAN addresses so testing from a phone works. A
+refused origin no longer throws — it simply gets no `Access-Control-Allow-Origin`
+header, which is what CORS is supposed to do, and the reason is logged
+server-side naming the origin to add to `CORS_ORIGINS`. See
+`src/config/cors.js` in either service.
+
 **`restart` is not `up -d`**
 `docker compose restart` re-runs the process inside the *existing* container. It
 never re-reads `docker-compose.yml`, so a changed environment variable, port or
@@ -736,6 +973,42 @@ That is informational, not an error — the service is up and serving. It means 
 core API is down, so newly logged jobs will not carry a reporter snapshot unless
 the room is supplied. Start the backend and it clears itself.
 
+**`migrate dev` refuses: "changes that cannot be executed"**
+You added a required column to a table that already has rows, and Prisma will
+not invent values for them. It is right to refuse. Write the migration by
+hand — add the column nullable, backfill it, then enforce it. See
+[Conventions](#conventions) and the points migration for a worked example.
+
+**A badge shows the wrong label**
+Check `StatusBadge.jsx` has an entry for that status. A missing one used to
+fall back to `PENDING` and display "Pending review"; it now renders the raw
+status and logs a warning in development naming what to add.
+
+**Points: "Set a spending PIN before using your points"**
+Expected on a first purchase. Students start without a PIN; setting one needs
+the account password, which for the demo accounts is `Password123`.
+
 **Everything is wedged**
-`docker compose down -v && docker compose up -d --build`, then migrate and seed
-**both** services again. This deletes both databases.
+`docker compose down -v && docker compose up -d --build`, then create
+`maintenance_db`, migrate and seed **both** services again. This deletes both
+databases.
+
+---
+
+## Testing
+
+There is no test runner wired into `npm test`. The suites are written and run
+against an in-memory stand-in for the Prisma client, plus a real PostgreSQL for
+anything where the guarantee being relied on is the database's own.
+
+| Suite | Covers |
+| --- | --- |
+| Lifecycle and permissions | Every status transition, who may drive it, and what each role can see |
+| Concurrency | Simultaneous accepts, double-submits, reopen racing close, parallel wallet debits |
+| Cross-service contract | A token minted by the core API's real signing code, presented to the maintenance service — this is what catches the two copies of the JWT guard drifting apart |
+| End-to-end | The real UI driven in a headless browser: report → accept → resolve → close, and credit → set PIN → spend → reload |
+
+**Every concurrency test was verified to fail against deliberately unguarded
+code before it was trusted.** A green test that cannot go red is not evidence.
+Remove the compare-and-swap and ten simultaneous 30-point spends against a
+100-point balance end at **−200** instead of stopping at three.
