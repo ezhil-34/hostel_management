@@ -30,7 +30,4 @@ router.use('/profile', profileRoutes);
 router.use('/outpasses', outpassRoutes);
 router.use('/points', pointsRoutes);
 
-// Feature routers land here as they are built:
-// router.use('/maintenance', maintenanceRoutes);
-
 export default router;

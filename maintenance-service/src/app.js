@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 
 import env from './config/env.js';
 import routes from './routes/index.js';
+import buildCorsDelegate from './config/cors.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export const createApp = () => {
@@ -14,15 +15,7 @@ export const createApp = () => {
   app.set('trust proxy', 1);
 
   app.use(helmet());
-  app.use(
-    cors({
-      origin(origin, callback) {
-        if (!origin || env.corsOrigins.includes(origin)) return callback(null, true);
-        return callback(new Error(`Origin ${origin} is not allowed by CORS`));
-      },
-      credentials: true,
-    }),
-  );
+  app.use(cors(buildCorsDelegate(env, 'maintenance-service')));
 
   app.use(express.json({ limit: '1mb' }));
   app.use(morgan(env.isProd ? 'combined' : 'dev'));

@@ -11,10 +11,12 @@ const BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const ACCESS_TOKEN_KEY = 'hostel_access_token';
 
 export class ApiRequestError extends Error {
-  constructor(message, { status, details } = {}) {
+  constructor(message, { status, details, code } = {}) {
     super(message);
     this.name = 'ApiRequestError';
     this.status = status;
+    /** Stable identifier from the server, e.g. TOKEN_INVALID. May be absent. */
+    this.code = code;
     this.details = details ?? [];
   }
 
@@ -50,6 +52,7 @@ const rawRequest = async (path, { method = 'GET', body, headers = {}, auth = tru
   if (!response.ok) {
     throw new ApiRequestError(payload?.error?.message ?? `Request failed (${response.status})`, {
       status: response.status,
+      code: payload?.error?.code,
       details: payload?.error?.details,
     });
   }
@@ -75,9 +78,24 @@ export const request = async (path, options = {}) => {
   try {
     return await rawRequest(path, options);
   } catch (err) {
-    const retryable =
+    /**
+     * Replay only a 401 that really means "the access token has expired".
+     *
+     * This used to replay *any* 401 on an authenticated request. That is fine
+     * for a stale token and wrong for everything else: the points module
+     * answered a wrong spending PIN with 401, so one tap on Pay was posted
+     * twice and burned two of the five attempts before the wallet locked. The
+     * server now returns 403 for a refused action, and this guard means a
+     * future endpoint making the same mistake cannot silently double-post a
+     * payment either.
+     */
+    const expiredToken =
       err instanceof ApiRequestError &&
       err.status === 401 &&
+      (err.code === 'TOKEN_INVALID' || err.code === 'TOKEN_MISSING');
+
+    const retryable =
+      expiredToken &&
       options.auth !== false &&
       !options._retried &&
       !path.startsWith('/auth/refresh');
@@ -142,6 +160,29 @@ export const outpassApi = {
   verify: (token) => api.get(`/outpasses/verify/${token}`),
   markExit: (token) => api.post(`/outpasses/verify/${token}/exit`),
   markReturn: (token) => api.post(`/outpasses/verify/${token}/return`),
+};
+
+/**
+ * Canteen and laundry points. Served by the core API, because a wallet belongs
+ * to a user and the two are joined on every read — the test for whether
+ * something can be its own service.
+ */
+export const pointsApi = {
+  wallets: () => api.get('/points/wallets'),
+  transactions: ({ type = 'ALL', limit = 50 } = {}) =>
+    api.get(`/points/transactions?type=${type}&limit=${limit}`),
+
+  // Counters. `counters` backs the picker that stands in for a camera; `counter`
+  // is what a real scan would call with the token out of the QR code.
+  counters: () => api.get('/points/counters'),
+  counter: (token) => api.get(`/points/counters/${encodeURIComponent(token)}`),
+
+  setPin: (payload) => api.post('/points/pin', payload),
+  spend: (payload) => api.post('/points/spend', payload),
+
+  // Warden / admin.
+  findStudents: (q) => api.get(`/points/students?q=${encodeURIComponent(q)}`),
+  credit: (payload) => api.post('/points/credit', payload),
 };
 
 /**

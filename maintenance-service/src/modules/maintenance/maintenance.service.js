@@ -250,7 +250,17 @@ export const withdrawRequest = async (viewer, id) => {
     );
   }
 
-  const updated = await transition(id, 'OPEN', { status: 'WITHDRAWN', closedAt: new Date() });
+  /**
+   * Stamping the view time in the same write is what stops a student's own
+   * action lighting up their own "Update" badge. The badge means "something
+   * happened while you were not looking"; clicking the button yourself is the
+   * clearest possible case of looking.
+   */
+  const updated = await transition(id, 'OPEN', {
+    status: 'WITHDRAWN',
+    closedAt: new Date(),
+    lastStudentViewAt: new Date(),
+  });
   if (!updated) throw ApiError.conflict('This request changed while you were withdrawing it');
 
   await recordEvent(id, 'WITHDRAWN', { id: viewer.id, name: request.reporterName });
@@ -274,6 +284,8 @@ export const reopenRequest = async (viewer, id, { reason }) => {
     resolutionNote: null,
     resolvedAt: null,
     reopenCount: { increment: 1 },
+    // The student just did this themselves — see closeRequest.
+    lastStudentViewAt: new Date(),
   });
   if (!updated) throw ApiError.conflict('This request changed while you were reopening it');
 
@@ -291,7 +303,17 @@ export const closeRequest = async (viewer, id) => {
     );
   }
 
-  const updated = await transition(id, 'RESOLVED', { status: 'CLOSED', closedAt: new Date() });
+  /**
+   * Stamping the view time in the same write is what stops a student's own
+   * action lighting up their own "Update" badge. The badge means "something
+   * happened while you were not looking"; clicking the button yourself is the
+   * clearest possible case of looking.
+   */
+  const updated = await transition(id, 'RESOLVED', {
+    status: 'CLOSED',
+    closedAt: new Date(),
+    lastStudentViewAt: new Date(),
+  });
   if (!updated) throw ApiError.conflict('This request changed while you were closing it');
 
   await recordEvent(id, 'CLOSED', { id: viewer.id, name: request.reporterName });

@@ -177,12 +177,23 @@ model Outpass {
   @@map("outpasses")
 }
 
+/// One wallet per student per type. `balance` is in whole points and is never
+/// written by reading it first — every debit is a conditional update that
+/// carries `balance >= cost` in its WHERE clause, so two spends at once cannot
+/// both succeed against the same points. See points.service.js.
 model Wallet {
   id        String     @id @default(uuid()) @db.Uuid
   userId    String     @map("user_id") @db.Uuid
   type      WalletType
   balance   Int        @default(0)
+  /// bcrypt, at the same cost as an account password. Null until the student
+  /// sets one; the first spend is what asks them to.
   pinHash   String?    @map("pin_hash")
+  /// Consecutive wrong PINs. Reset to zero by a correct one.
+  pinAttempts    Int       @default(0) @map("pin_attempts")
+  /// Set when attempts hit the limit. A four-digit PIN is 10,000 guesses, which
+  /// is minutes of scripted attempts without this.
+  pinLockedUntil DateTime? @map("pin_locked_until")
   createdAt DateTime   @default(now()) @map("created_at")
   updatedAt DateTime   @updatedAt @map("updated_at")
 
@@ -194,12 +205,25 @@ model Wallet {
   @@map("wallets")
 }
 
+/// Append-only ledger. Rows are never updated or deleted — a correction is
+/// another row in the opposite direction, so the history always explains the
+/// balance.
 model PointTransaction {
   id        String          @id @default(uuid()) @db.Uuid
   walletId  String          @map("wallet_id") @db.Uuid
+  /// Human-readable receipt code shown after a spend, e.g. PTS-4F2A19.
+  reference String          @unique
   title     String
   points    Int
   type      TransactionType
+  /// Snapshotted, not joined: renaming a counter next term must not rewrite
+  /// what last month's receipt said.
+  counterName String?       @map("counter_name")
+  /// Who credited this, for a CREDIT row. Null on a student's own spend.
+  actorName   String?       @map("actor_name")
+  /// Why, for a CREDIT row — "cash paid at the office", "mess refund".
+  note        String?
+  balanceAfter Int          @map("balance_after")
   createdAt DateTime        @default(now()) @map("created_at")
 
   wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
@@ -207,6 +231,41 @@ model PointTransaction {
   @@index([walletId, createdAt])
   @@map("point_transactions")
 }
+
+/// A canteen or laundry counter. Students reach one by scanning its QR code;
+/// `qrToken` is what the code contains, so a counter can be re-issued a new
+/// code without touching its menu or its history.
+model Counter {
+  id       String     @id @default(uuid()) @db.Uuid
+  name     String
+  type     WalletType
+  qrToken  String     @unique @map("qr_token")
+  isActive Boolean    @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  items MenuItem[]
+
+  @@map("counters")
+}
+
+/// What a counter sells. The price lives here and is read server-side at spend
+/// time — the browser never gets to say what something costs.
+model MenuItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  counterId   String   @map("counter_id") @db.Uuid
+  name        String
+  points      Int
+  isAvailable Boolean  @default(true) @map("is_available")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  counter Counter @relation(fields: [counterId], references: [id], onDelete: Cascade)
+
+  @@index([counterId])
+  @@map("menu_items")
+}
+=======
 
 // ---------------------------------------------------------------------------
 // Points Tracker — payment PIN, secret QR codes, wallet transactions

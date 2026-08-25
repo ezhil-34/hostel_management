@@ -29,8 +29,14 @@ export default function MaintenanceDetailModal({
   detail,
   loading,
   canLeaveInternal,
+  busy = false,
   onClose,
   onComment,
+  onWithdraw,
+  onReopen,
+  onConfirmFixed,
+  onAccept,
+  onResolve,
 }) {
   const [body, setBody] = useState('');
   const [isInternal, setIsInternal] = useState(false);
@@ -72,6 +78,31 @@ export default function MaintenanceDetailModal({
   };
 
   const c = detail?.request;
+
+  /**
+   * Driven entirely by the capability flags the API returns on the request, so
+   * the dialog can never offer something the server would refuse. `isOwner`
+   * separates the student's actions from the handler's, exactly as the card does.
+   */
+  const actions = !c
+    ? []
+    : [
+        c.isOwner && c.canWithdraw && onWithdraw
+          ? { key: 'withdraw', label: 'Withdraw', variant: 'ghost', run: onWithdraw }
+          : null,
+        c.isOwner && c.canReopen && onReopen
+          ? { key: 'reopen', label: 'Not fixed', variant: 'amber', run: onReopen }
+          : null,
+        c.isOwner && c.canClose && onConfirmFixed
+          ? { key: 'close', label: 'Confirm fixed', variant: 'emerald', run: onConfirmFixed }
+          : null,
+        !c.isOwner && c.canAccept && onAccept
+          ? { key: 'accept', label: 'Accept', variant: 'blue', run: onAccept }
+          : null,
+        !c.isOwner && c.canResolve && onResolve
+          ? { key: 'resolve', label: 'Mark resolved', variant: 'emerald', run: onResolve }
+          : null,
+      ].filter(Boolean);
 
   return (
     <div
@@ -268,9 +299,47 @@ export default function MaintenanceDetailModal({
                 )}
               </form>
             )}
+
+            {/*
+              The same actions the card offers, repeated here. Reading the
+              description and the thread is exactly when someone decides to act,
+              and making them close the dialog to find the button was a small
+              cruelty. The server's capability flags decide what appears, so
+              this cannot drift from what the API will actually allow.
+            */}
+            {actions.length > 0 && (
+              <footer className="flex flex-wrap gap-2 border-t border-slate-100 bg-slate-50 p-4">
+                {actions.map(({ key, label, variant, run }) => (
+                  <DetailAction key={key} busy={busy} variant={variant} onClick={run}>
+                    {label}
+                  </DetailAction>
+                ))}
+              </footer>
+            )}
           </>
         )}
       </div>
     </div>
+  );
+}
+
+function DetailAction({ busy, variant, onClick, children }) {
+  const styles = {
+    blue: 'bg-blue-600 hover:bg-blue-700 text-white',
+    emerald: 'bg-emerald-600 hover:bg-emerald-700 text-white',
+    amber: 'border border-amber-300 bg-white text-amber-700 hover:bg-amber-50',
+    ghost: 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
+  }[variant];
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold shadow-sm transition-colors disabled:opacity-60 ${styles}`}
+    >
+      {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+      {children}
+    </button>
   );
 }

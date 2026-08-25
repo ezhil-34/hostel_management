@@ -19,6 +19,7 @@ import MaintenanceCard from '../components/MaintenanceCard';
 import { CATEGORY_LABELS } from '../lib/maintenanceMeta';
 import MaintenanceFormModal from '../components/MaintenanceFormModal';
 import MaintenanceDetailModal from '../components/MaintenanceDetailModal';
+import NotePromptModal from '../components/NotePromptModal';
 
 const WORKER_ROLES = ['MAINTENANCE_WORKER'];
 const OVERSIGHT_ROLES = ['WARDEN', 'ADMIN'];
@@ -34,7 +35,17 @@ export default function MaintenancePage() {
   const isOversight = OVERSIGHT_ROLES.includes(user?.role);
   const canLeaveInternal = isWorker || isOversight;
 
-  const [tab, setTab] = useState(() => (isWorker ? 'queue' : 'mine'));
+  /**
+   * Land everyone on the tab that is about their job. Wardens and admins
+   * almost never file faults themselves, so defaulting them to "My Requests"
+   * showed an empty page that reads as a broken feature. ProtectedRoute blocks
+   * until the session has loaded, so `user` is populated when this runs.
+   */
+  const [tab, setTab] = useState(() => {
+    if (isWorker) return 'queue';
+    if (isOversight) return 'all';
+    return 'mine';
+  });
   const [status, setStatus] = useState('ALL');
   const [category, setCategory] = useState('ALL');
 
@@ -47,6 +58,13 @@ export default function MaintenancePage() {
   const [loadError, setLoadError] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [formOpen, setFormOpen] = useState(false);
+
+  /**
+   * The job awaiting a written note, and which action wants it. Resolve and
+   * reopen both need a sentence before they can go through; this drives the
+   * NotePromptModal that asks for it.
+   */
+  const [notePrompt, setNotePrompt] = useState(null);
 
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -147,6 +165,27 @@ export default function MaintenancePage() {
     }
   };
 
+  /**
+   * Completes whichever action asked for a written note. The dialog closes
+   * only on success, so a failure leaves what was typed on screen to retry
+   * rather than throwing the note away.
+   */
+  const handleNoteSubmit = async (text) => {
+    const { request, submit, success, failure } = notePrompt;
+    setBusyId(request.id);
+    try {
+      const result = await submit(text);
+      await load();
+      if (detail?.request?.id === request.id) setDetail(await maintenanceApi.get(request.id));
+      toast.success(success, result?.message);
+      setNotePrompt(null);
+    } catch (err) {
+      toast.error(failure, err.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleAccept = async (c) => {
     const confirmed = await confirm({
       title: 'Take this job?',
@@ -166,18 +205,20 @@ export default function MaintenancePage() {
     });
   };
 
-  const handleResolve = async (c) => {
-    const note = window.prompt('What did you do to fix it? (at least 10 characters)');
-    if (note === null) return;
-    if (note.trim().length < 10) {
-      toast.error('Note too short', 'Describe the fix in at least 10 characters.');
-      return;
-    }
-    await run(c, () => maintenanceApi.resolve(c.id, { resolutionNote: note }), {
+  const handleResolve = (c) =>
+    setNotePrompt({
+      request: c,
+      title: 'Mark this job resolved?',
+      description: 'Your note is what the student sees, so say what you actually did.',
+      label: 'What did you do to fix it?',
+      placeholder: 'e.g. Replaced the worn washer and reseated the spindle. Ran the tap for five minutes with no drip.',
+      confirmLabel: 'Mark resolved',
+      tone: 'emerald',
+      details: { Job: c.title, Reference: c.reference },
+      submit: (note) => maintenanceApi.resolve(c.id, { resolutionNote: note }),
       success: 'Marked resolved',
       failure: 'Could not resolve',
     });
-  };
 
   const handleWithdraw = async (c) => {
     const confirmed = await confirm({
@@ -195,18 +236,20 @@ export default function MaintenancePage() {
     });
   };
 
-  const handleReopen = async (c) => {
-    const reason = window.prompt('What is still wrong? (at least 10 characters)');
-    if (reason === null) return;
-    if (reason.trim().length < 10) {
-      toast.error('Reason too short', 'Explain in at least 10 characters.');
-      return;
-    }
-    await run(c, () => maintenanceApi.reopen(c.id, { reason }), {
+  const handleReopen = (c) =>
+    setNotePrompt({
+      request: c,
+      title: 'Reopen this job?',
+      description: `It goes straight back to ${c.assigneeName ?? 'the worker who handled it'}, who already knows the job.`,
+      label: 'What is still wrong?',
+      placeholder: 'e.g. The tap is quieter but still drips overnight — there was a small puddle again this morning.',
+      confirmLabel: 'Reopen',
+      tone: 'amber',
+      details: { Job: c.title, Reference: c.reference },
+      submit: (reason) => maintenanceApi.reopen(c.id, { reason }),
       success: 'Reopened',
       failure: 'Could not reopen',
     });
-  };
 
   const handleClose = async (c) => {
     const confirmed = await confirm({
@@ -364,11 +407,21 @@ export default function MaintenancePage() {
         {visible.length === 0 ? (
           <EmptyState
             Icon={tab === 'mine' ? MessageSquare : Inbox}
-            title={tab === 'mine' ? 'Nothing reported yet' : 'Nothing here'}
+            title={
+              tab === 'mine'
+                ? 'Nothing reported yet'
+                : tab === 'queue'
+                  ? 'No jobs waiting'
+                  : 'Nothing logged yet'
+            }
             message={
+              // An empty page is the moment someone decides the feature is
+              // broken, so each one says whose emptiness it is and what fills it.
               tab === 'mine'
                 ? 'Report a fault and a maintenance worker will pick it up. You will see an update the moment it is fixed.'
-                : 'Requests matching these filters will appear here.'
+                : tab === 'queue'
+                  ? 'The open pool is clear and nothing is assigned to you. New reports show up here as soon as they are logged.'
+                  : 'No fault has been reported in the hostel yet. Everything students and workers log will appear here.'
             }
           />
         ) : (
@@ -404,8 +457,29 @@ export default function MaintenancePage() {
           detail={detail}
           loading={detailLoading}
           canLeaveInternal={canLeaveInternal && !detail.request?.isOwner}
+          busy={busyId === detail.request?.id}
           onClose={() => setDetail(null)}
           onComment={handleComment}
+          onWithdraw={() => handleWithdraw(detail.request)}
+          onReopen={() => handleReopen(detail.request)}
+          onConfirmFixed={() => handleClose(detail.request)}
+          onAccept={() => handleAccept(detail.request)}
+          onResolve={() => handleResolve(detail.request)}
+        />
+      )}
+
+      {notePrompt && (
+        <NotePromptModal
+          title={notePrompt.title}
+          description={notePrompt.description}
+          label={notePrompt.label}
+          placeholder={notePrompt.placeholder}
+          confirmLabel={notePrompt.confirmLabel}
+          tone={notePrompt.tone}
+          details={notePrompt.details}
+          submitting={busyId === notePrompt.request.id}
+          onCancel={() => setNotePrompt(null)}
+          onSubmit={handleNoteSubmit}
         />
       )}
     </div>
