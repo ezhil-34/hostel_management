@@ -216,4 +216,33 @@ export const maintenanceApi = {
   health: () => api.get('/maintenance/health', { auth: false }),
 };
 
+/**
+ * Points tracker — served by the core API (see routes/index.js). A student's
+ * two wallets (canteen/laundry), their spending history, their payment PIN,
+ * and scan-and-pay against a secret QR an admin/vendor generates.
+ */
+const txQuery = ({ walletType = 'ALL', limit = 50 } = {}) =>
+  `?walletType=${walletType}&limit=${limit}`;
+
+export const pointsApi = {
+  // Every signed-in user.
+  wallets: () => api.get('/points/wallets'),
+  transactions: (opts) => api.get(`/points/transactions${txQuery(opts)}`),
+
+  pinStatus: () => api.get('/points/pin'),
+  setPin: (payload) => api.post('/points/pin', payload),
+  changePin: (payload) => api.patch('/points/pin', payload),
+
+  // Scan a counter's QR (the token comes from the /points/pay/:token URL).
+  previewPay: (token) => api.get(`/points/pay/${token}`),
+  pay: (token, payload) => api.post(`/points/pay/${token}`, payload),
+
+  // Warden / admin — fill points and generate the secret QR, or top up
+  // a student's wallet directly by roll number.
+  createQr: (payload) => api.post('/points/admin/qr', payload),
+  listQr: (status = 'ALL') => api.get(`/points/admin/qr?status=${status}`),
+  cancelQr: (id) => api.patch(`/points/admin/qr/${id}/cancel`),
+  topUp: (payload) => api.post('/points/admin/topup', payload),
+};
+
 export default api;

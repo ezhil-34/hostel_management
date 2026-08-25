@@ -1,70 +1,82 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-
+import env from '../../config/env.js';
 import validate from '../../middleware/validate.js';
 import { requireAuth, requireRole } from '../../middleware/auth.js';
 import * as controller from './points.controller.js';
-import { OVERSIGHT_ROLES } from './points.service.js';
+import { ADMIN_ROLES } from './points.service.js';
 import {
   setPinSchema,
-  spendSchema,
-  creditSchema,
-  lookupQuerySchema,
-  historyQuerySchema,
-  counterTokenParamSchema,
+  changePinSchema,
+  payQrSchema,
+  createQrSchema,
+  topUpSchema,
+  listQrQuerySchema,
+  listTxQuerySchema,
+  idParamSchema,
+  tokenParamSchema,
 } from './points.schema.js';
 
 const router = Router();
 
-/**
- * A tighter limit on the two routes that take a PIN.
- *
- * The per-wallet lockout in the service is the real defence; this sits in front
- * of it so an attacker cannot spray one guess each across many accounts without
- * ever tripping a single wallet's counter.
- */
-const pinLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 30,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  message: {
-    success: false,
-    error: { message: 'Too many PIN attempts from this device. Try again in a few minutes.' },
-  },
-});
-
 router.use(requireAuth);
 
-// --- The student's own wallets ---------------------------------------------
+// PIN and payment attempts get a tighter budget, same as auth's credential
+// endpoints — this is the one place in the module a brute force matters.
+const pinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: env.isProd ? 15 : 1000,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { success: false, error: { message: 'Too many attempts — try again in 15 minutes' } },
+});
+
+// --- Student: wallets, spending history, PIN --------------------------------
 router.get('/wallets', controller.wallets);
-router.get('/transactions', validate(historyQuerySchema, 'query'), controller.history);
+router.get('/transactions', validate(listTxQuerySchema, 'query'), controller.transactions);
 
-// --- Counters ---------------------------------------------------------------
-// Listed before the token route so "counters" is never read as a token.
-router.get('/counters', controller.counters);
-router.get(
-  '/counters/:token',
-  validate(counterTokenParamSchema, 'params'),
-  controller.counterByToken,
-);
-
-// --- Spending ---------------------------------------------------------------
+router.get('/pin', controller.pinStatus);
 router.post('/pin', pinLimiter, validate(setPinSchema), controller.setPin);
-router.post('/spend', pinLimiter, validate(spendSchema), controller.spend);
+router.patch('/pin', pinLimiter, validate(changePinSchema), controller.changePin);
 
-// --- Warden / admin ---------------------------------------------------------
-router.get(
-  '/students',
-  requireRole(...OVERSIGHT_ROLES),
-  validate(lookupQuerySchema, 'query'),
-  controller.lookup,
-);
+// --- Student: scan a counter's QR and pay -----------------------------------
+// Declared with a distinct prefix so a payment token is never confused with
+// an admin QR id below.
+router.get('/pay/:token', validate(tokenParamSchema, 'params'), controller.previewPay);
 router.post(
-  '/credit',
-  requireRole(...OVERSIGHT_ROLES),
-  validate(creditSchema),
-  controller.credit,
+  '/pay/:token',
+  pinLimiter,
+  validate(tokenParamSchema, 'params'),
+  validate(payQrSchema),
+  controller.pay,
+);
+
+// --- Admin / warden: fill points & generate the secret QR -------------------
+router.post(
+  '/admin/qr',
+  requireRole(...ADMIN_ROLES),
+  validate(createQrSchema),
+  controller.createQr,
+);
+router.get(
+  '/admin/qr',
+  requireRole(...ADMIN_ROLES),
+  validate(listQrQuerySchema, 'query'),
+  controller.listQr,
+);
+router.patch(
+  '/admin/qr/:id/cancel',
+  requireRole(...ADMIN_ROLES),
+  validate(idParamSchema, 'params'),
+  controller.cancelQr,
+);
+
+// --- Admin / warden: direct wallet top-up (recharge) ------------------------
+router.post(
+  '/admin/topup',
+  requireRole(...ADMIN_ROLES),
+  validate(topUpSchema),
+  controller.topUp,
 );
 
 export default router;

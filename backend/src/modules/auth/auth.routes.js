@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import env from '../../config/env.js';
 import validate from '../../middleware/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
 import * as controller from './auth.controller.js';
@@ -7,10 +8,10 @@ import { signupSchema, signinSchema, changePasswordSchema } from './auth.schema.
 
 const router = Router();
 
-// Credential endpoints get a tighter budget than the rest of the API.
+// Credential endpoints get a tighter budget than the rest of the API in production.
 const credentialLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 20,
+  limit: env.isProd ? 20 : 1000,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { success: false, error: { message: 'Too many attempts — try again in 15 minutes' } },

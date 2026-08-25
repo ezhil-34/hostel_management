@@ -1,8 +1,13 @@
 import { z } from 'zod';
 
-// zod v4 applies `.trim()` after validation, so normalise up front.
+// zod v4 applies `.trim()` after validation, so normalise up front — same
+// convention as auth.schema.js / outpass.schema.js.
 const trimmed = (schema) => z.preprocess((v) => (typeof v === 'string' ? v.trim() : v), schema);
 
+const upper = (schema) =>
+  z.preprocess((v) => (typeof v === 'string' ? v.trim().toUpperCase() : v), schema);
+
+/** Treats "" and null the same as "not provided". */
 const optional = (schema) =>
   z.preprocess(
     (v) => (v === null || (typeof v === 'string' && v.trim() === '') ? undefined : v),
@@ -11,77 +16,68 @@ const optional = (schema) =>
 
 export const WALLET_TYPES = ['CANTEEN', 'LAUNDRY'];
 
-/**
- * Exactly four digits, as a string.
- *
- * A string, not a number, because "0042" is a perfectly good PIN and
- * `Number('0042')` is 42. Leading zeros have to survive the trip.
- */
-const pin = trimmed(
-  z
-    .string()
-    .regex(/^\d{4}$/, 'Your PIN is exactly four digits'),
-);
+const pinField = z
+  .string()
+  .regex(/^\d{4,6}$/, 'PIN must be 4 to 6 digits');
 
-export const walletTypeParamSchema = z.object({
-  type: z.enum(WALLET_TYPES, 'Pick a wallet'),
+const amountField = z.coerce
+  .number('Amount is required')
+  .int('Amount must be a whole number')
+  .positive('Amount must be greater than 0')
+  .max(100000, 'Amount is too large');
+
+export const setPinSchema = z
+  .object({
+    pin: pinField,
+    confirmPin: pinField,
+  })
+  .refine((d) => d.pin === d.confirmPin, { path: ['confirmPin'], error: 'PINs do not match' });
+
+export const changePinSchema = z
+  .object({
+    currentPin: z.string().min(1, 'Current PIN is required'),
+    newPin: pinField,
+    confirmNewPin: pinField,
+  })
+  .refine((d) => d.newPin === d.confirmNewPin, {
+    path: ['confirmNewPin'],
+    error: 'PINs do not match',
+  })
+  .refine((d) => d.currentPin !== d.newPin, {
+    path: ['newPin'],
+    error: 'New PIN must be different from the current PIN',
+  });
+
+export const payQrSchema = z.object({
+  pin: z.string().min(1, 'PIN is required'),
 });
 
-export const setPinSchema = z.object({
-  pin,
-  confirmPin: pin,
-  /**
-   * Setting or replacing a PIN needs the account password. Without this a
-   * borrowed unlocked phone is enough to set a fresh PIN and drain both
-   * wallets — the PIN would protect nothing.
-   */
-  password: trimmed(z.string().min(1, 'Enter your account password')),
-}).refine((v) => v.pin === v.confirmPin, {
-  message: 'The two PINs do not match',
-  path: ['confirmPin'],
+export const createQrSchema = z.object({
+  walletType: z.enum(WALLET_TYPES, `walletType must be ${WALLET_TYPES.join(' or ')}`),
+  amount: amountField,
+  title: optional(trimmed(z.string().max(120, 'Keep the title under 120 characters'))),
 });
 
-export const spendSchema = z.object({
-  counterToken: trimmed(z.string().min(8, 'Scan a counter QR code first')),
-  itemId: z.uuid('Pick something from the menu'),
-  pin,
-  /**
-   * Sent by the browser and echoed back, never trusted for money. Two taps on
-   * Confirm produce the same key, and the second one returns the first
-   * receipt instead of charging twice.
-   */
-  idempotencyKey: optional(trimmed(z.string().max(64))),
+export const topUpSchema = z.object({
+  rollNumber: upper(z.string().min(2, 'Roll number is required').max(30)),
+  walletType: z.enum(WALLET_TYPES, `walletType must be ${WALLET_TYPES.join(' or ')}`),
+  amount: amountField,
+  note: optional(trimmed(z.string().max(200, 'Keep the note under 200 characters'))),
 });
 
-export const creditSchema = z.object({
-  /** Roll number or email — whatever is easier to read off a paper slip. */
-  identifier: trimmed(z.string().min(1, 'Enter a roll number or email')),
-  type: z.enum(WALLET_TYPES, 'Pick a wallet'),
-  points: z
-    .number('Enter an amount in points')
-    .int('Points come in whole numbers')
-    .min(1, 'Credit at least 1 point')
-    .max(100000, 'That is more than any hostel account should hold'),
-  note: trimmed(
-    z
-      .string()
-      .min(3, 'Say what this is for — it appears on the student’s statement')
-      .max(200, 'Keep it under 200 characters'),
-  ),
+export const listQrQuerySchema = z.object({
+  status: z.enum(['PENDING', 'PAID', 'CANCELLED', 'EXPIRED', 'ALL']).default('ALL'),
 });
 
-export const lookupQuerySchema = z.object({
-  q: optional(trimmed(z.string().max(80))),
+export const listTxQuerySchema = z.object({
+  walletType: z.enum([...WALLET_TYPES, 'ALL']).default('ALL'),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
-export const historyQuerySchema = z.object({
-  type: z.enum([...WALLET_TYPES, 'ALL']).default('ALL'),
-  limit: z.preprocess(
-    (v) => (v === undefined || v === '' ? 50 : Number(v)),
-    z.number().int().min(1).max(200),
-  ),
+export const idParamSchema = z.object({
+  id: z.uuid('Invalid id'),
 });
 
-export const counterTokenParamSchema = z.object({
-  token: trimmed(z.string().min(8, 'That is not a counter code')),
+export const tokenParamSchema = z.object({
+  token: trimmed(z.string().min(20, 'Invalid payment code').max(200)),
 });
