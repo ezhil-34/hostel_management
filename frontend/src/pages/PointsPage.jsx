@@ -631,8 +631,10 @@ function PaymentModal({
   const [scanning, setScanning] = useState(false);
 
   // Scanning is the convenience; the field below is the path that always works.
-  // A camera needs a secure context, so over a plain http:// LAN address — the
-  // way this gets demonstrated on a phone — it is simply unavailable.
+  // A decoder is bundled, so this no longer turns on whether the browser has
+  // BarcodeDetector. What remains is the camera itself: it needs a secure
+  // context, so over a plain http:// LAN address — the way this gets
+  // demonstrated on a phone — it is simply unavailable.
   const cameraAvailable = canScan() && isSecureForCamera();
 
   const startPayment = () => {
@@ -713,7 +715,7 @@ function PaymentModal({
           {!cameraAvailable && !scanning && (
             <p className="mb-4 text-xs text-slate-500">
               {isSecureForCamera()
-                ? 'This browser cannot read QR codes on its own — type the code instead.'
+                ? 'This browser will not give the page a camera — type the code instead.'
                 : 'The camera needs a secure connection, so it is unavailable on this address. Type the code instead.'}
             </p>
           )}

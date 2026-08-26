@@ -1,41 +1,60 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Camera, CameraOff, Loader2, X } from 'lucide-react';
+import jsQR from 'jsqr';
 
-import { canScan, isSecureForCamera } from '../lib/qr';
+import { canScan, isSecureForCamera, hasNativeDetector } from '../lib/qr';
 
 /**
  * Reads a payment QR with the device camera.
  *
- * Uses the browser's own `BarcodeDetector` rather than a bundled decoder. That
- * keeps this dependency-free — which matters here, because adding one to the
- * frontend means reaching into a running container to install it, and a missed
- * install shows up as a page that will not load rather than a scanner that will
- * not scan.
+ * Two decoders, in preference order:
  *
- * The trade is that `BarcodeDetector` is not in every browser. Everywhere it is
- * missing, and everywhere the camera is refused, this component says so plainly
- * and the typed-code field beside it still works. Scanning is the convenience;
- * typing is the path that always exists.
+ *   1. The browser's own `BarcodeDetector` — free and fast, but Chromium ships
+ *      it only on Android, ChromeOS and macOS, and Firefox not at all.
+ *   2. `jsqr`, bundled. Slower, works everywhere.
+ *
+ * The original relied on (1) alone. That is defensible when the frontend runs in
+ * a container — adding a dependency there means installing into a running
+ * container, and a missed install breaks the whole page rather than one button.
+ * Run natively, that cost is gone, and the price of the old trade was that the
+ * scan button sat permanently disabled on every Linux and Windows desktop.
+ *
+ * Typing the code beside this still works and always did; scanning is the
+ * convenience. What changed is that the convenience now exists off Android.
  */
+
+/** jsQR walks every pixel, so give it a small frame and a slow clock. */
+const DECODE_INTERVAL_MS = 120;
+const MAX_DECODE_WIDTH = 480;
 
 export default function QrScanner({ onResult, onClose }) {
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const rafRef = useRef(0);
+  const timerRef = useRef(0);
   const doneRef = useRef(false);
 
   const [status, setStatus] = useState('starting');
   const [error, setError] = useState('');
 
+  // The effect below must not re-run when the parent re-renders with a fresh
+  // inline callback — that tore the camera down and started it again mid-scan.
+  // Holding it in a ref keeps the effect's dependencies genuinely stable.
+  const onResultRef = useRef(onResult);
+  useEffect(() => {
+    onResultRef.current = onResult;
+  }, [onResult]);
+
   /** Stops the camera. Called on unmount, on error, and on the first hit. */
   const stop = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
+    clearTimeout(timerRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    doneRef.current = false;
 
     (async () => {
       if (!isSecureForCamera()) {
@@ -48,7 +67,7 @@ export default function QrScanner({ onResult, onClose }) {
 
       if (!canScan()) {
         setStatus('unsupported');
-        setError('This browser cannot read QR codes on its own. Type the code instead.');
+        setError('This browser will not give the page a camera. Type the code instead.');
         return;
       }
 
@@ -70,28 +89,56 @@ export default function QrScanner({ onResult, onClose }) {
         }
         setStatus('scanning');
 
-        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        const detector = hasNativeDetector()
+          ? new window.BarcodeDetector({ formats: ['qr_code'] })
+          : null;
+
+        /** Draws the current frame down to a workable size and runs jsQR on it. */
+        const decodeWithJsQr = (video) => {
+          const vw = video.videoWidth;
+          const vh = video.videoHeight;
+          if (!vw || !vh) return undefined;
+
+          const scale = Math.min(1, MAX_DECODE_WIDTH / vw);
+          const w = Math.round(vw * scale);
+          const h = Math.round(vh * scale);
+
+          const canvas = (canvasRef.current ??= document.createElement('canvas'));
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+          }
+
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          ctx.drawImage(video, 0, 0, w, h);
+          const { data } = ctx.getImageData(0, 0, w, h);
+
+          return jsQR(data, w, h, { inversionAttempts: 'dontInvert' })?.data;
+        };
 
         const tick = async () => {
           if (cancelled || doneRef.current || !videoRef.current) return;
+
           try {
-            const found = await detector.detect(videoRef.current);
-            const value = found?.[0]?.rawValue;
+            const value = detector
+              ? (await detector.detect(videoRef.current))?.[0]?.rawValue
+              : decodeWithJsQr(videoRef.current);
+
             if (value && !doneRef.current) {
-              // Guard against firing twice: detect() runs every frame and a code
-              // stays in view for many of them.
+              // Guard against firing twice: a code stays in view for many frames.
               doneRef.current = true;
               stop();
-              onResult(value);
+              onResultRef.current(value);
               return;
             }
           } catch {
             // A single failed frame is normal while focusing. Keep going.
           }
-          rafRef.current = requestAnimationFrame(tick);
+
+          timerRef.current = setTimeout(tick, DECODE_INTERVAL_MS);
         };
 
-        rafRef.current = requestAnimationFrame(tick);
+        timerRef.current = setTimeout(tick, DECODE_INTERVAL_MS);
       } catch (err) {
         if (cancelled) return;
         setStatus('denied');
@@ -107,7 +154,7 @@ export default function QrScanner({ onResult, onClose }) {
       cancelled = true;
       stop();
     };
-  }, [onResult, stop]);
+  }, [stop]);
 
   const failed = status !== 'starting' && status !== 'scanning';
 
