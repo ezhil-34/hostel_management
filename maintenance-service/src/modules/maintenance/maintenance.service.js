@@ -53,7 +53,13 @@ const requestSelect = {
 export const serializeRequest = (request, viewer) => {
   if (!request) return request;
 
-  const { studentId, lastStudentViewAt, ...rest } = request;
+  /**
+   * `assigneeId` goes out with the others. It is a core-API user uuid, it is
+   * used only server-side (for `canResolve` and the worker's queue filter), and
+   * nothing in the UI reads it — so handing a student a stable identifier for a
+   * staff account was pure leak. The worker's *name* is what the student needs.
+   */
+  const { studentId, assigneeId, lastStudentViewAt, ...rest } = request;
   const isOwner = viewer.id === studentId;
 
   const statusChangedAt =

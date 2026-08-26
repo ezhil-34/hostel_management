@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, Loader2, MessageSquare, User as UserIcon } from 'lucide-react';
+import { ArrowRight, Loader2, MessageSquare, User as UserIcon, AlertTriangle } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 
 const formatDate = (value) =>
@@ -71,6 +71,22 @@ export default function ChangeRequestCard({
               {request.reviewer?.name ?? 'Reviewer'}:{' '}
             </span>
             {request.reviewNote}
+          </span>
+        </p>
+      )}
+
+      {/*
+        Reviewer-only. The server computes this for the queue; a student is
+        never told whether a value is taken, because answering that question on
+        demand is an account-enumeration oracle.
+      */}
+      {mode === 'review' && isPending && request.valueUnavailable && (
+        <p className="mt-2 flex gap-1.5 rounded-xl bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+          <span>
+            <span className="font-semibold">Already in use: </span>
+            another account already has this {label?.toLowerCase() ?? 'value'}. Approving
+            will fail until one of them changes.
           </span>
         </p>
       )}

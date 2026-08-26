@@ -147,8 +147,19 @@ export const createChangeRequest = async (userId, role, { field, newValue, reaso
     );
   }
 
-  await assertUnique(field, value, userId);
-
+  /**
+   * Deliberately NOT checking uniqueness here.
+   *
+   * Doing so turned this route into an account-enumeration oracle: a student
+   * could submit any email or roll number and read the 409 to learn whether it
+   * belongs to someone. That defeats the property `/auth/signin` goes out of its
+   * way to preserve, and no row was created, so it could be repeated forever.
+   *
+   * The request is accepted either way. `reviewRequest` re-checks uniqueness
+   * before it writes anything — which it has to regardless, since the value
+   * could be taken in the days between asking and approving — and the reviewer
+   * queue flags a clash so a warden sees it before deciding.
+   */
   return prisma.profileChangeRequest.create({
     data: {
       reference: newReference(),
@@ -194,13 +205,47 @@ export const cancelOwnRequest = async (userId, requestId) => {
   });
 };
 
-/** Reviewer queue — everyone's requests, newest pending first. */
-export const listAllRequests = (status) =>
-  prisma.profileChangeRequest.findMany({
+/**
+ * Reviewer queue — everyone's requests, newest pending first.
+ *
+ * Pending requests for a unique field carry `valueUnavailable`, so a warden can
+ * see that an email or roll number is already taken before approving. Students
+ * are told nothing of the sort: that check used to run when the request was
+ * raised, which let anyone probe for registered accounts.
+ */
+export const listAllRequests = async (status) => {
+  const requests = await prisma.profileChangeRequest.findMany({
     where: status && status !== 'ALL' ? { status } : {},
     select: requestSelect,
     orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
   });
+
+  // `user` is a nested select and should always be there; guard anyway, because
+  // the alternative is a 500 on the warden's queue if it ever is not.
+  const pendingUnique = requests.filter(
+    (r) => r.status === 'PENDING' && UNIQUE_FIELDS.has(r.field) && r.user?.id,
+  );
+  if (pendingUnique.length === 0) return requests;
+
+  const clashes = await prisma.user.findMany({
+    where: {
+      OR: pendingUnique.map((r) => ({ [r.field]: r.newValue, NOT: { id: r.user.id } })),
+    },
+    select: { id: true, email: true, rollNumber: true },
+  });
+
+  const taken = new Set(
+    clashes.flatMap((u) => [`email:${u.email}`, `rollNumber:${u.rollNumber}`]),
+  );
+
+  const checked = new Set(pendingUnique.map((r) => r.id));
+
+  return requests.map((r) =>
+    checked.has(r.id)
+      ? { ...r, valueUnavailable: taken.has(`${r.field}:${r.newValue}`) }
+      : r,
+  );
+};
 
 export const reviewRequest = async (reviewerId, requestId, { decision, note }) => {
   const request = await prisma.profileChangeRequest.findUnique({ where: { id: requestId } });

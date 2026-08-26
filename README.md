@@ -826,6 +826,22 @@ client also only replays a 401 carrying `code: "TOKEN_INVALID"` or
 `"TOKEN_MISSING"`, so a future endpoint making the same mistake cannot
 double-post a payment.
 
+**A retry key identifies an operation, not just a request.** The spend endpoint
+accepts an `idempotencyKey` so a double-tap cannot charge twice. It stores a
+fingerprint of what was bought alongside it, and the same key presented for a
+*different* item is refused with a 409. It used to derive the receipt code from
+the key and match on that alone — so buying a 15-point tea with key `aaaaaa` and
+then sending `aaaaaa` with a 120-point biryani returned "already paid" and
+handed the item over for nothing, repeatably. Receipt codes are always
+server-generated.
+
+**Do not answer questions the caller should not be able to ask.** Raising a
+profile change request used to reject a value already in use, which let any
+student probe whether an email or roll number belonged to a registered account —
+undoing the non-enumeration property `/auth/signin` deliberately maintains. The
+request is now accepted either way; approval re-checks uniqueness before writing,
+and the reviewer's queue carries a `valueUnavailable` flag the student never sees.
+
 **A new status needs a badge entry.** `StatusBadge.jsx` maps every status to a
 label. `CLOSED` was missing once, and the fallback quietly borrowed `PENDING`'s
 label — so a closed maintenance job displayed "Pending review". An unrecognised

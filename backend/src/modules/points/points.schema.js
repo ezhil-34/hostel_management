@@ -78,6 +78,16 @@ export const idParamSchema = z.object({
   id: z.uuid('Invalid id'),
 });
 
+/**
+ * What arrives in the URL is either the long secret from a scanned QR or the
+ * short reference someone typed. `min(20)` accepted only the former, so a typed
+ * `PTS-4F2A19` was rejected before it ever reached the lookup.
+ */
 export const tokenParamSchema = z.object({
-  token: trimmed(z.string().min(20, 'Invalid payment code').max(200)),
+  token: trimmed(
+    z
+      .string()
+      .min(6, 'Enter the payment code shown at the counter')
+      .max(200, 'That does not look like a payment code'),
+  ),
 });

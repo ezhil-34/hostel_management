@@ -99,7 +99,13 @@ export const cancelQr = async (req, res, next) => {
 
 export const topUp = async (req, res, next) => {
   try {
+    console.log('TOPUP user:', req.user);
+    console.log('TOPUP body:', req.body);
+
     const result = await pointsService.topUpWallet(req.user.id, req.body);
+
+    console.log('TOPUP result:', result);
+
     ok(
       res,
       {
@@ -109,6 +115,8 @@ export const topUp = async (req, res, next) => {
       201,
     );
   } catch (err) {
+    console.error('TOPUP ERROR:', err);
+    console.error('TOPUP ERROR STACK:', err.stack);
     next(err);
   }
 };

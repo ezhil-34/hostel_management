@@ -265,7 +265,6 @@ model MenuItem {
   @@index([counterId])
   @@map("menu_items")
 }
-=======
 
 // ---------------------------------------------------------------------------
 // Points Tracker — payment PIN, secret QR codes, wallet transactions

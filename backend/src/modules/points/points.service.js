@@ -194,8 +194,28 @@ export const cancelQrCode = async (adminId, id) => {
   return serializeQr(await prisma.pointsQrCode.findUnique({ where: { id }, select: qrSelect }));
 };
 
-const findByToken = async (token) => {
-  const qr = await prisma.pointsQrCode.findUnique({ where: { token } });
+/**
+ * Resolves what the student presented — either the secret from a scanned QR, or
+ * the short reference they read off the counter's screen and typed in.
+ *
+ * A camera needs a secure context, so scanning silently does not work over plain
+ * http on a LAN address, which is exactly how this gets demonstrated. Typing the
+ * reference has to work or the feature does not.
+ *
+ * Accepting the reference is a smaller concession than it looks: paying spends
+ * the payer's OWN points, so guessing one buys somebody else lunch rather than
+ * stealing anything. The exposure is nuisance — marking a stranger's bill paid —
+ * and it is bounded by a 15-minute expiry, the caller's own PIN, and the rate
+ * limiter on this route. The QR still carries the long token; nothing is weakened
+ * for anyone who scans.
+ */
+const findByToken = async (code) => {
+  const value = String(code ?? '').trim();
+
+  const qr = await prisma.pointsQrCode.findFirst({
+    where: { OR: [{ token: value }, { reference: value.toUpperCase() }] },
+  });
+
   if (!qr) {
     throw ApiError.notFound('This payment code is not valid. Ask the counter to generate a new one.');
   }

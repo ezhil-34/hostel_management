@@ -1,12 +1,3 @@
-/**
- * Thin fetch wrapper around the SmartHostel API.
- *
- * - Attaches the access token to every request.
- * - On a 401 caused by an expired access token, silently refreshes once and
- *   replays the original request.
- * - Throws an `ApiRequestError` carrying the server's message and field errors.
- */
-
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const ACCESS_TOKEN_KEY = 'hostel_access_token';
 
@@ -15,14 +6,14 @@ export class ApiRequestError extends Error {
     super(message);
     this.name = 'ApiRequestError';
     this.status = status;
-    /** Stable identifier from the server, e.g. TOKEN_INVALID. May be absent. */
     this.code = code;
     this.details = details ?? [];
   }
 
-  /** { email: "...", password: "..." } for rendering errors next to inputs. */
   get fieldErrors() {
-    return Object.fromEntries(this.details.map((d) => [d.field, d.message]));
+    return Object.fromEntries(
+      this.details.map((d) => [d.field, d.message]),
+    );
   }
 }
 
@@ -34,36 +25,67 @@ export const tokenStore = {
 
 let refreshInFlight = null;
 
-const rawRequest = async (path, { method = 'GET', body, headers = {}, auth = true } = {}) => {
+const rawRequest = async (
+  path,
+  {
+    method = 'GET',
+    body,
+    headers = {},
+    auth = true,
+  } = {},
+) => {
+  const token = tokenStore.get();
+
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
     credentials: 'include',
     headers: {
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-      ...(auth && tokenStore.get() ? { Authorization: `Bearer ${tokenStore.get()}` } : {}),
+      ...(body !== undefined && body !== null
+        ? { 'Content-Type': 'application/json' }
+        : {}),
+      ...(auth && token
+        ? { Authorization: `Bearer ${token}` }
+        : {}),
       ...headers,
     },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    ...(body !== undefined && body !== null
+      ? { body: JSON.stringify(body) }
+      : {}),
   });
 
-  const isJson = response.headers.get('content-type')?.includes('application/json');
-  const payload = isJson ? await response.json().catch(() => null) : null;
+  const isJson = response.headers
+    .get('content-type')
+    ?.includes('application/json');
+
+  const payload = isJson
+    ? await response.json().catch(() => null)
+    : null;
 
   if (!response.ok) {
-    throw new ApiRequestError(payload?.error?.message ?? `Request failed (${response.status})`, {
-      status: response.status,
-      code: payload?.error?.code,
-      details: payload?.error?.details,
-    });
+    throw new ApiRequestError(
+      payload?.error?.message ||
+        `Request failed (${response.status})`,
+      {
+        status: response.status,
+        code: payload?.error?.code,
+        details: payload?.error?.details,
+      },
+    );
   }
 
   return payload?.data ?? payload;
 };
 
 const refreshSession = () => {
-  // Collapse concurrent 401s into a single refresh call.
-  refreshInFlight ??= rawRequest('/auth/refresh', { method: 'POST', auth: false })
+  refreshInFlight ??= rawRequest('/auth/refresh', {
+    method: 'POST',
+    auth: false,
+  })
     .then((data) => {
+      if (!data?.accessToken) {
+        throw new Error('Invalid refresh response');
+      }
+
       tokenStore.set(data.accessToken);
       return data;
     })
@@ -78,21 +100,11 @@ export const request = async (path, options = {}) => {
   try {
     return await rawRequest(path, options);
   } catch (err) {
-    /**
-     * Replay only a 401 that really means "the access token has expired".
-     *
-     * This used to replay *any* 401 on an authenticated request. That is fine
-     * for a stale token and wrong for everything else: the points module
-     * answered a wrong spending PIN with 401, so one tap on Pay was posted
-     * twice and burned two of the five attempts before the wallet locked. The
-     * server now returns 403 for a refused action, and this guard means a
-     * future endpoint making the same mistake cannot silently double-post a
-     * payment either.
-     */
     const expiredToken =
       err instanceof ApiRequestError &&
       err.status === 401 &&
-      (err.code === 'TOKEN_INVALID' || err.code === 'TOKEN_MISSING');
+      (err.code === 'TOKEN_INVALID' ||
+        err.code === 'TOKEN_MISSING');
 
     const retryable =
       expiredToken &&
@@ -100,7 +112,9 @@ export const request = async (path, options = {}) => {
       !options._retried &&
       !path.startsWith('/auth/refresh');
 
-    if (!retryable) throw err;
+    if (!retryable) {
+      throw err;
+    }
 
     try {
       await refreshSession();
@@ -109,140 +123,301 @@ export const request = async (path, options = {}) => {
       throw err;
     }
 
-    return rawRequest(path, { ...options, _retried: true });
+    return rawRequest(path, {
+      ...options,
+      _retried: true,
+    });
   }
 };
 
 export const api = {
-  get: (path, options) => request(path, { ...options, method: 'GET' }),
-  post: (path, body, options) => request(path, { ...options, method: 'POST', body }),
-  patch: (path, body, options) => request(path, { ...options, method: 'PATCH', body }),
-  delete: (path, options) => request(path, { ...options, method: 'DELETE' }),
+  get: (path, options) =>
+    request(path, {
+      ...options,
+      method: 'GET',
+    }),
+
+  post: (path, body, options) =>
+    request(path, {
+      ...options,
+      method: 'POST',
+      body,
+    }),
+
+  patch: (path, body, options) =>
+    request(path, {
+      ...options,
+      method: 'PATCH',
+      body,
+    }),
+
+  delete: (path, options) =>
+    request(path, {
+      ...options,
+      method: 'DELETE',
+    }),
 };
 
 export const authApi = {
-  signup: (payload) => api.post('/auth/signup', payload, { auth: false }),
-  signin: (payload) => api.post('/auth/signin', payload, { auth: false }),
-  logout: () => api.post('/auth/logout', undefined, { auth: false }),
+  signup: (payload) =>
+    api.post('/auth/signup', payload, {
+      auth: false,
+    }),
+
+  signin: (payload) =>
+    api.post('/auth/signin', payload, {
+      auth: false,
+    }),
+
+  logout: () =>
+    api.post('/auth/logout', undefined, {
+      auth: false,
+    }),
+
   me: () => api.get('/auth/me'),
-  changePassword: (payload) => api.post('/auth/change-password', payload),
+
+  changePassword: (payload) =>
+    api.post('/auth/change-password', payload),
 };
 
 export const profileApi = {
-  /** Profile + the per-role field policy the UI renders from. */
   get: () => api.get('/profile'),
-  /** Only fields the policy marks editable; anything else returns 403. */
-  update: (payload) => api.patch('/profile', payload),
 
-  listMyRequests: (status = 'ALL') => api.get(`/profile/requests?status=${status}`),
-  createRequest: (payload) => api.post('/profile/requests', payload),
-  cancelRequest: (id) => api.patch(`/profile/requests/${id}/cancel`),
+  update: (payload) =>
+    api.patch('/profile', payload),
 
-  // Warden / admin only.
-  listAllRequests: (status = 'ALL') => api.get(`/profile/review/requests?status=${status}`),
-  review: (id, payload) => api.patch(`/profile/review/requests/${id}`, payload),
+  listMyRequests: (status = 'ALL') =>
+    api.get(
+      `/profile/requests?status=${encodeURIComponent(status)}`,
+    ),
+
+  createRequest: (payload) =>
+    api.post('/profile/requests', payload),
+
+  cancelRequest: (id) =>
+    api.patch(
+      `/profile/requests/${encodeURIComponent(id)}/cancel`,
+    ),
+
+  listAllRequests: (status = 'ALL') =>
+    api.get(
+      `/profile/review/requests?status=${encodeURIComponent(status)}`,
+    ),
+
+  review: (id, payload) =>
+    api.patch(
+      `/profile/review/requests/${encodeURIComponent(id)}`,
+      payload,
+    ),
 };
 
-const outpassQuery = ({ status = 'ALL', overdue = false } = {}) =>
-  `?status=${status}${overdue ? '&overdue=true' : ''}`;
+const outpassQuery = ({
+  status = 'ALL',
+  overdue = false,
+} = {}) =>
+  `?status=${encodeURIComponent(status)}${
+    overdue ? '&overdue=true' : ''
+  }`;
 
 export const outpassApi = {
-  list: (opts) => api.get(`/outpasses${outpassQuery(opts)}`),
-  create: (payload) => api.post('/outpasses', payload),
-  get: (id) => api.get(`/outpasses/${id}`),
-  cancel: (id) => api.patch(`/outpasses/${id}/cancel`),
+  list: (opts) =>
+    api.get(`/outpasses${outpassQuery(opts)}`),
 
-  // Warden / admin.
-  listForReview: (opts) => api.get(`/outpasses/review${outpassQuery(opts)}`),
-  review: (id, payload) => api.patch(`/outpasses/review/${id}`, payload),
+  create: (payload) =>
+    api.post('/outpasses', payload),
 
-  // Gate — security, warden or admin only.
-  verify: (token) => api.get(`/outpasses/verify/${token}`),
-  markExit: (token) => api.post(`/outpasses/verify/${token}/exit`),
-  markReturn: (token) => api.post(`/outpasses/verify/${token}/return`),
+  get: (id) =>
+    api.get(
+      `/outpasses/${encodeURIComponent(id)}`,
+    ),
+
+  cancel: (id) =>
+    api.patch(
+      `/outpasses/${encodeURIComponent(id)}/cancel`,
+    ),
+
+  listForReview: (opts) =>
+    api.get(
+      `/outpasses/review${outpassQuery(opts)}`,
+    ),
+
+  review: (id, payload) =>
+    api.patch(
+      `/outpasses/review/${encodeURIComponent(id)}`,
+      payload,
+    ),
+
+  verify: (token) =>
+    api.get(
+      `/outpasses/verify/${encodeURIComponent(token)}`,
+    ),
+
+  markExit: (token) =>
+    api.post(
+      `/outpasses/verify/${encodeURIComponent(token)}/exit`,
+    ),
+
+  markReturn: (token) =>
+    api.post(
+      `/outpasses/verify/${encodeURIComponent(token)}/return`,
+    ),
 };
 
-/**
- * Canteen and laundry points. Served by the core API, because a wallet belongs
- * to a user and the two are joined on every read — the test for whether
- * something can be its own service.
- */
+const pointsTransactionQuery = ({
+  walletType = 'ALL',
+  type,
+  limit = 50,
+} = {}) => {
+  const params = new URLSearchParams();
+
+  params.set('walletType', walletType);
+  params.set('limit', String(limit));
+
+  if (type) {
+    params.set('type', type);
+  }
+
+  return `?${params.toString()}`;
+};
+
 export const pointsApi = {
-  wallets: () => api.get('/points/wallets'),
-  transactions: ({ type = 'ALL', limit = 50 } = {}) =>
-    api.get(`/points/transactions?type=${type}&limit=${limit}`),
+  wallets: () =>
+    api.get('/points/wallets'),
 
-  // Counters. `counters` backs the picker that stands in for a camera; `counter`
-  // is what a real scan would call with the token out of the QR code.
-  counters: () => api.get('/points/counters'),
-  counter: (token) => api.get(`/points/counters/${encodeURIComponent(token)}`),
+  transactions: (opts = {}) =>
+    api.get(
+      `/points/transactions${pointsTransactionQuery(opts)}`,
+    ),
 
-  setPin: (payload) => api.post('/points/pin', payload),
-  spend: (payload) => api.post('/points/spend', payload),
+  counters: () =>
+    api.get('/points/counters'),
 
-  // Warden / admin.
-  findStudents: (q) => api.get(`/points/students?q=${encodeURIComponent(q)}`),
-  credit: (payload) => api.post('/points/credit', payload),
+  counter: (token) =>
+    api.get(
+      `/points/counters/${encodeURIComponent(token)}`,
+    ),
+
+  pinStatus: () =>
+    api.get('/points/pin'),
+
+  setPin: (payload) =>
+    api.post('/points/pin', payload),
+
+  changePin: (payload) =>
+    api.patch('/points/pin', payload),
+
+  spend: (payload) =>
+    api.post('/points/spend', payload),
+
+  previewPay: (token) =>
+    api.get(
+      `/points/pay/${encodeURIComponent(token)}`,
+    ),
+
+  pay: (token, payload) =>
+    api.post(
+      `/points/pay/${encodeURIComponent(token)}`,
+      payload,
+    ),
+
+  findStudents: (q) =>
+    api.get(
+      `/points/students?q=${encodeURIComponent(q)}`,
+    ),
+
+  credit: (payload) =>
+    api.post('/points/credit', payload),
+
+  topUp: (payload) =>
+    api.post('/points/admin/topup', payload),
+
+  createQr: (payload) =>
+    api.post('/points/admin/qr', payload),
+
+  listQr: (status = 'ALL') =>
+    api.get(
+      `/points/admin/qr?status=${encodeURIComponent(status)}`,
+    ),
+
+  cancelQr: (id) =>
+    api.patch(
+      `/points/admin/qr/${encodeURIComponent(id)}/cancel`,
+    ),
 };
 
-/**
- * Maintenance is served by a separate service, but nothing here knows that.
- * The gateway (Vite in dev, nginx in production) routes `/api/maintenance` to
- * it and everything else under `/api` to the core API — so these calls look
- * exactly like the rest, and moving a module between services would not touch
- * this file.
- */
-const maintenanceQuery = ({ status = 'ALL', category = 'ALL' } = {}) =>
-  `?status=${status}&category=${category}`;
+const maintenanceQuery = ({
+  status = 'ALL',
+  category = 'ALL',
+} = {}) =>
+  `?status=${encodeURIComponent(
+    status,
+  )}&category=${encodeURIComponent(category)}`;
 
 export const maintenanceApi = {
-  list: (opts) => api.get(`/maintenance${maintenanceQuery(opts)}`),
-  create: (payload) => api.post('/maintenance', payload),
-  get: (id) => api.get(`/maintenance/${id}`),
-  withdraw: (id) => api.patch(`/maintenance/${id}/withdraw`),
-  reopen: (id, payload) => api.post(`/maintenance/${id}/reopen`, payload),
-  close: (id) => api.post(`/maintenance/${id}/close`),
-  comment: (id, payload) => api.post(`/maintenance/${id}/comments`, payload),
+  list: (opts) =>
+    api.get(`/maintenance${maintenanceQuery(opts)}`),
 
-  // Maintenance worker.
-  queue: (opts) => api.get(`/maintenance/queue${maintenanceQuery(opts)}`),
-  accept: (id) => api.post(`/maintenance/${id}/accept`),
-  resolve: (id, payload) => api.post(`/maintenance/${id}/resolve`, payload),
+  create: (payload) =>
+    api.post('/maintenance', payload),
 
-  // Warden / admin.
-  listAll: (opts) => api.get(`/maintenance/admin${maintenanceQuery(opts)}`),
-  reassign: (id, payload) => api.post(`/maintenance/${id}/reassign`, payload),
+  get: (id) =>
+    api.get(
+      `/maintenance/${encodeURIComponent(id)}`,
+    ),
 
-  health: () => api.get('/maintenance/health', { auth: false }),
-};
+  withdraw: (id) =>
+    api.patch(
+      `/maintenance/${encodeURIComponent(id)}/withdraw`,
+    ),
 
-/**
- * Points tracker — served by the core API (see routes/index.js). A student's
- * two wallets (canteen/laundry), their spending history, their payment PIN,
- * and scan-and-pay against a secret QR an admin/vendor generates.
- */
-const txQuery = ({ walletType = 'ALL', limit = 50 } = {}) =>
-  `?walletType=${walletType}&limit=${limit}`;
+  reopen: (id, payload) =>
+    api.post(
+      `/maintenance/${encodeURIComponent(id)}/reopen`,
+      payload,
+    ),
 
-export const pointsApi = {
-  // Every signed-in user.
-  wallets: () => api.get('/points/wallets'),
-  transactions: (opts) => api.get(`/points/transactions${txQuery(opts)}`),
+  close: (id) =>
+    api.post(
+      `/maintenance/${encodeURIComponent(id)}/close`,
+    ),
 
-  pinStatus: () => api.get('/points/pin'),
-  setPin: (payload) => api.post('/points/pin', payload),
-  changePin: (payload) => api.patch('/points/pin', payload),
+  comment: (id, payload) =>
+    api.post(
+      `/maintenance/${encodeURIComponent(id)}/comments`,
+      payload,
+    ),
 
-  // Scan a counter's QR (the token comes from the /points/pay/:token URL).
-  previewPay: (token) => api.get(`/points/pay/${token}`),
-  pay: (token, payload) => api.post(`/points/pay/${token}`, payload),
+  queue: (opts) =>
+    api.get(
+      `/maintenance/queue${maintenanceQuery(opts)}`,
+    ),
 
-  // Warden / admin — fill points and generate the secret QR, or top up
-  // a student's wallet directly by roll number.
-  createQr: (payload) => api.post('/points/admin/qr', payload),
-  listQr: (status = 'ALL') => api.get(`/points/admin/qr?status=${status}`),
-  cancelQr: (id) => api.patch(`/points/admin/qr/${id}/cancel`),
-  topUp: (payload) => api.post('/points/admin/topup', payload),
+  accept: (id) =>
+    api.post(
+      `/maintenance/${encodeURIComponent(id)}/accept`,
+    ),
+
+  resolve: (id, payload) =>
+    api.post(
+      `/maintenance/${encodeURIComponent(id)}/resolve`,
+      payload,
+    ),
+
+  listAll: (opts) =>
+    api.get(
+      `/maintenance/admin${maintenanceQuery(opts)}`,
+    ),
+
+  reassign: (id, payload) =>
+    api.post(
+      `/maintenance/${encodeURIComponent(id)}/reassign`,
+      payload,
+    ),
+
+  health: () =>
+    api.get('/maintenance/health', {
+      auth: false,
+    }),
 };
 
 export default api;
