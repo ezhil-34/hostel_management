@@ -4,11 +4,23 @@
  * fast refresh during development.
  */
 
-/** Whether this browser can decode a QR without a bundled library. */
+/**
+ * Whether the browser exposes the native decoder. Chromium ships `BarcodeDetector`
+ * only on Android, ChromeOS and macOS — never on Linux or Windows desktop, and
+ * Firefox not at all. It is a fast path when present, never a requirement.
+ */
+export const hasNativeDetector = () =>
+  typeof window !== 'undefined' && 'BarcodeDetector' in window;
+
+/**
+ * Whether this browser can scan at all. A decoder is now bundled, so the only
+ * hard requirement is camera access — which is why this no longer asks for
+ * `BarcodeDetector`. Gating on that API disabled the button outright on every
+ * Linux and Windows desktop, with no way for the user to tell scanning apart
+ * from a browser that simply refused to try.
+ */
 export const canScan = () =>
-  typeof window !== 'undefined' &&
-  'BarcodeDetector' in window &&
-  Boolean(navigator.mediaDevices?.getUserMedia);
+  typeof window !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia);
 
 /**
  * A camera needs a secure context. `localhost` counts; `http://192.168.1.20`
